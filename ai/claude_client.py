@@ -13,11 +13,52 @@ class ClaudeClient:
         """Инициализировать клиент Claude."""
         try:
             self.client = Anthropic(api_key=settings.claude_api_key)
-            # Используем актуальное имя модели согласно документации
-            self.model = "claude-3-5-sonnet-20240620"
+            # Используем актуальное имя модели Claude 3.5 Sonnet
+            # Попробуем разные варианты имен моделей
+            self.model = "claude-3-5-sonnet-20241022"  # Последняя версия
         except Exception as e:
             logger.error(f"Ошибка при инициализации Claude клиента: {e}")
             raise
+    
+    def _try_models(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1024) -> str:
+        """Попробовать разные модели если основная не работает."""
+        models_to_try = [
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620", 
+            "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307"
+        ]
+        
+        for model_name in models_to_try:
+            try:
+                logger.info(f"Пробую модель: {model_name}")
+                request_params = {
+                    "model": model_name,
+                    "max_tokens": max_tokens,
+                    "messages": [{"role": "user", "content": prompt}]
+                }
+                
+                if system_prompt:
+                    request_params["system"] = system_prompt
+                
+                message = self.client.messages.create(**request_params)
+                
+                if message.content and len(message.content) > 0:
+                    first_content = message.content[0]
+                    if hasattr(first_content, 'text'):
+                        logger.info(f"Успешно использована модель: {model_name}")
+                        self.model = model_name  # Сохраняем рабочую модель
+                        return first_content.text
+                    elif isinstance(first_content, dict) and 'text' in first_content:
+                        logger.info(f"Успешно использована модель: {model_name}")
+                        self.model = model_name
+                        return first_content['text']
+            except Exception as e:
+                logger.warning(f"Модель {model_name} не работает: {e}")
+                continue
+        
+        raise ValueError("Ни одна из моделей Claude не доступна")
     
     def get_completion(
         self,
