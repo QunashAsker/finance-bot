@@ -456,7 +456,7 @@ async def ai_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Настройки."""
     await update.message.reply_text(
         "⚙️ Настройки будут доступны в следующей версии!",
@@ -477,7 +477,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 История": show_history,
         "📈 Статистика": show_statistics,
         "🤖 AI Ассистент": ai_assistant,
-        "⚙️ Настройки": settings
+        "⚙️ Настройки": show_settings
     }
     
     if text in menu_commands:
