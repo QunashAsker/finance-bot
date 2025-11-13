@@ -506,8 +506,7 @@ def create_income_conversation():
                 CallbackQueryHandler(cancel_transaction, pattern="^cancel$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_transaction)],
-        per_message=True
+        fallbacks=[CommandHandler("cancel", cancel_transaction)]
     )
 
 
@@ -527,8 +526,7 @@ def create_expense_conversation():
                 CallbackQueryHandler(cancel_transaction, pattern="^cancel$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_transaction)],
-        per_message=True
+        fallbacks=[CommandHandler("cancel", cancel_transaction)]
     )
 
 

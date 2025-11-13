@@ -1,5 +1,5 @@
 """Модели базы данных."""
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, JSON, Boolean, Date, Enum as SQLEnum
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, ForeignKey, Text, JSON, Boolean, Date, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -24,7 +24,7 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(Integer, unique=True, index=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
     username = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     settings = Column(JSON, default={})
