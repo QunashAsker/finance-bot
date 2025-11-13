@@ -26,17 +26,45 @@ class ClaudeClient:
     ) -> str:
         """Получить ответ от Claude."""
         try:
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            return message.content[0].text
+            # Формируем messages согласно документации Claude API
+            # content может быть строкой или массивом объектов с type и text
+            messages = [
+                {
+                    "role": "user",
+                    "content": prompt  # Простая строка работает в новом API
+                }
+            ]
+            
+            # Формируем параметры запроса
+            request_params = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "messages": messages
+            }
+            
+            # Если есть system prompt, добавляем его как строку (согласно документации)
+            if system_prompt:
+                request_params["system"] = system_prompt
+            
+            message = self.client.messages.create(**request_params)
+            
+            # Извлекаем текст из ответа
+            # response.content - это массив объектов с type и text
+            if message.content and len(message.content) > 0:
+                # Проверяем тип первого элемента
+                first_content = message.content[0]
+                if hasattr(first_content, 'text'):
+                    return first_content.text
+                elif isinstance(first_content, dict) and 'text' in first_content:
+                    return first_content['text']
+                else:
+                    # Если это объект TextBlock
+                    return str(first_content)
+            else:
+                raise ValueError("Пустой ответ от Claude API")
         except Exception as e:
             logger.error(f"Ошибка при запросе к Claude API: {e}")
+            logger.error(f"Тип ошибки: {type(e)}")
             raise
     
     def analyze_receipt(
@@ -59,6 +87,7 @@ class ClaudeClient:
 Если какая-то информация не видна, укажи null. Отвечай только JSON без дополнительного текста."""
         
         try:
+            # Формируем content как массив для мультимодального запроса
             message = self.client.messages.create(
                 model=self.model,
                 max_tokens=1024,
