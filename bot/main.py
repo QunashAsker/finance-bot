@@ -17,7 +17,9 @@ from database.crud import (
     get_categories_by_user,
     create_transaction,
     get_transactions_by_user,
-    get_balance
+    get_balance,
+    get_statistics_by_category,
+    get_average_daily_expense
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
@@ -33,6 +35,7 @@ from config.settings import settings
 from loguru import logger
 from datetime import datetime, date, timedelta
 from typing import Dict, Any
+from ai.claude_client import ClaudeClient
 
 # Состояния для ConversationHandler
 AMOUNT, CATEGORY, DESCRIPTION, CONFIRM = range(4)
@@ -442,18 +445,168 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать статистику."""
-    await update.message.reply_text(
-        "📈 Статистика будет доступна в следующей версии!",
-        reply_markup=get_main_menu_keyboard()
-    )
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        # Период - текущий месяц
+        today = date.today()
+        first_day = date(today.year, today.month, 1)
+        
+        # Общая статистика за месяц
+        month_stats = get_balance(db, db_user.id, start_date=first_day, end_date=today)
+        
+        # Статистика по категориям расходов
+        expense_stats = get_statistics_by_category(
+            db, db_user.id, TType.EXPENSE, start_date=first_day, end_date=today
+        )
+        
+        # Статистика по категориям доходов
+        income_stats = get_statistics_by_category(
+            db, db_user.id, TType.INCOME, start_date=first_day, end_date=today
+        )
+        
+        # Средний дневной расход
+        avg_daily = get_average_daily_expense(db, db_user.id, start_date=first_day, end_date=today)
+        
+        stats_text = f"""
+📈 *Статистика за текущий месяц*
+
+*Общие показатели:*
+💰 Доходы: {format_amount(month_stats['income'])}
+💸 Расходы: {format_amount(month_stats['expense'])}
+💵 Баланс: {format_amount(month_stats['balance'])}
+📊 Средний расход в день: {format_amount(avg_daily)}
+        """
+        
+        # Топ-5 категорий расходов
+        if expense_stats:
+            stats_text += "\n*Топ расходов по категориям:*\n"
+            for i, stat in enumerate(expense_stats[:5], 1):
+                percentage = (stat['total'] / month_stats['expense'] * 100) if month_stats['expense'] > 0 else 0
+                stats_text += f"{i}. {stat['icon']} {stat['name']}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+        
+        # Топ-5 категорий доходов
+        if income_stats:
+            stats_text += "\n*Топ доходов по категориям:*\n"
+            for i, stat in enumerate(income_stats[:5], 1):
+                percentage = (stat['total'] / month_stats['income'] * 100) if month_stats['income'] > 0 else 0
+                stats_text += f"{i}. {stat['icon']} {stat['name']}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+        
+        if not expense_stats and not income_stats:
+            stats_text += "\n📭 Нет транзакций за этот период"
+        
+        await update.message.reply_text(
+            stats_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_main_menu_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при показе статистики: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при загрузке статистики.")
+    finally:
+        db.close()
 
 
 async def ai_assistant(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """AI ассистент."""
     await update.message.reply_text(
-        "🤖 AI Ассистент будет доступен в следующей версии!",
+        "🤖 *AI Ассистент*\n\nЗадай мне вопрос о твоих финансах!\n\nПримеры:\n"
+        "• Сколько я потратил на еду в этом месяце?\n"
+        "• Покажи мои траты за последнюю неделю\n"
+        "• На что я больше всего трачу?\n"
+        "• Могу ли я позволить себе купить телефон за 50000?",
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=get_main_menu_keyboard()
     )
+    
+    # Сохраняем состояние для ожидания вопроса
+    context.user_data["waiting_for_ai_question"] = True
+
+
+async def handle_ai_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать вопрос для AI ассистента."""
+    if not context.user_data.get("waiting_for_ai_question"):
+        return
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        question = update.message.text
+        
+        # Получаем данные пользователя для контекста
+        today = date.today()
+        first_day = date(today.year, today.month, 1)
+        
+        # Статистика за месяц
+        month_stats = get_balance(db, db_user.id, start_date=first_day, end_date=today)
+        
+        # Последние транзакции
+        recent_transactions = get_transactions_by_user(db, db_user.id, limit=10)
+        
+        # Статистика по категориям
+        expense_stats = get_statistics_by_category(
+            db, db_user.id, TType.EXPENSE, start_date=first_day, end_date=today
+        )
+        
+        # Формируем контекст для Claude
+        context_data = f"""
+Данные пользователя за текущий месяц:
+- Доходы: {month_stats['income']:.2f} руб
+- Расходы: {month_stats['expense']:.2f} руб
+- Баланс: {month_stats['balance']:.2f} руб
+
+Топ категорий расходов:
+"""
+        for stat in expense_stats[:5]:
+            context_data += f"- {stat['name']}: {stat['total']:.2f} руб ({stat['count']} операций)\n"
+        
+        context_data += "\nПоследние транзакции:\n"
+        for trans in recent_transactions[:5]:
+            trans_type = "Доход" if trans.type == TType.INCOME else "Расход"
+            category_name = trans.category.name if trans.category else "Без категории"
+            context_data += f"- {trans_type}: {trans.amount:.2f} руб - {category_name}"
+            if trans.description:
+                context_data += f" ({trans.description})"
+            context_data += f" - {format_date(trans.date)}\n"
+        
+        # Отправляем запрос в Claude
+        claude = ClaudeClient()
+        
+        prompt = f"""Ты финансовый ассистент. Пользователь задал вопрос о своих финансах.
+
+Контекст с данными пользователя:
+{context_data}
+
+Вопрос пользователя: {question}
+
+Ответь на вопрос пользователя на русском языке, используя предоставленные данные. Будь дружелюбным и полезным. Если данных недостаточно для ответа, скажи об этом."""
+        
+        await update.message.reply_text("🤔 Думаю...")
+        
+        response = claude.get_completion(prompt, max_tokens=512)
+        
+        await update.message.reply_text(
+            f"🤖 *AI Ассистент*\n\n{response}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_main_menu_keyboard()
+        )
+        
+        # Сбрасываем флаг ожидания вопроса
+        context.user_data["waiting_for_ai_question"] = False
+        
+    except Exception as e:
+        logger.error(f"Ошибка в AI ассистенте: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке вопроса. Попробуй позже.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        context.user_data["waiting_for_ai_question"] = False
+    finally:
+        db.close()
 
 
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -467,6 +620,11 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     text = update.message.text
+    
+    # Проверяем, ожидается ли вопрос для AI
+    if context.user_data.get("waiting_for_ai_question"):
+        await handle_ai_question(update, context)
+        return
     
     # Проверяем, не является ли это командой из меню
     menu_commands = {

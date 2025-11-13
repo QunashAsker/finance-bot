@@ -209,3 +209,63 @@ def delete_budget(db: Session, budget_id: int) -> bool:
         return True
     return False
 
+
+# ========== Statistics ==========
+
+def get_statistics_by_category(
+    db: Session,
+    user_id: int,
+    transaction_type: TransactionType,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> List[dict]:
+    """Получить статистику по категориям."""
+    query = db.query(
+        Category.name,
+        Category.icon,
+        func.sum(Transaction.amount).label('total'),
+        func.count(Transaction.id).label('count')
+    ).join(
+        Transaction, Transaction.category_id == Category.id
+    ).filter(
+        Transaction.user_id == user_id,
+        Transaction.type == transaction_type
+    )
+    
+    if start_date:
+        query = query.filter(Transaction.date >= start_date)
+    if end_date:
+        query = query.filter(Transaction.date <= end_date)
+    
+    results = query.group_by(Category.id, Category.name, Category.icon).order_by(func.sum(Transaction.amount).desc()).all()
+    
+    return [
+        {
+            "name": r.name,
+            "icon": r.icon,
+            "total": float(r.total),
+            "count": r.count
+        }
+        for r in results
+    ]
+
+
+def get_average_daily_expense(
+    db: Session,
+    user_id: int,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None
+) -> float:
+    """Получить средний дневной расход."""
+    if end_date is None:
+        end_date = date.today()
+    if start_date is None:
+        start_date = date(end_date.year, end_date.month, 1)
+    
+    days = (end_date - start_date).days + 1
+    if days == 0:
+        return 0.0
+    
+    expenses = get_balance(db, user_id, start_date, end_date)["expense"]
+    return expenses / days if days > 0 else 0.0
+
