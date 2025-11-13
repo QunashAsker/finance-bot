@@ -82,3 +82,51 @@ def get_transaction_actions_keyboard(transaction_id: int):
     ]
     return InlineKeyboardMarkup(keyboard)
 
+
+def get_settings_keyboard():
+    """Клавиатура настроек."""
+    keyboard = [
+        [
+            InlineKeyboardButton("💱 Валюта", callback_data="setting_currency")
+        ],
+        [
+            InlineKeyboardButton("📅 Начало месяца", callback_data="setting_month_start")
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="settings_back")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_currency_keyboard():
+    """Клавиатура выбора валюты."""
+    currencies = [
+        ("₽", "RUB"),
+        ("$", "USD"),
+        ("€", "EUR"),
+        ("₴", "UAH"),
+        ("₸", "KZT")
+    ]
+    keyboard = []
+    for symbol, code in currencies:
+        keyboard.append([InlineKeyboardButton(
+            f"{symbol} {code}",
+            callback_data=f"currency_{code}"
+        )])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings_back")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_month_start_keyboard():
+    """Клавиатура выбора начала месяца."""
+    keyboard = []
+    # Группируем по 5 кнопок в ряд
+    for i in range(0, 31, 5):
+        row = []
+        for j in range(i + 1, min(i + 6, 32)):
+            row.append(InlineKeyboardButton(str(j), callback_data=f"month_start_{j}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings_back")])
+    return InlineKeyboardMarkup(keyboard)
+

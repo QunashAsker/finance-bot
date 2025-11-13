@@ -30,6 +30,26 @@ def get_or_create_user(db: Session, telegram_id: int, username: Optional[str] = 
     return user
 
 
+def update_user_settings(db: Session, user_id: int, settings: dict) -> User:
+    """Обновить настройки пользователя."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        current_settings = user.settings if user.settings else {}
+        current_settings.update(settings)
+        user.settings = current_settings
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def get_user_settings(db: Session, user_id: int) -> dict:
+    """Получить настройки пользователя."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        return user.settings if user.settings else {}
+    return {}
+
+
 # ========== Category CRUD ==========
 
 def get_categories_by_user(db: Session, user_id: int, transaction_type: Optional[TransactionType] = None) -> List[Category]:

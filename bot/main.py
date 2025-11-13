@@ -19,7 +19,9 @@ from database.crud import (
     get_transactions_by_user,
     get_balance,
     get_statistics_by_category,
-    get_average_daily_expense
+    get_average_daily_expense,
+    update_user_settings,
+    get_user_settings
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
@@ -29,7 +31,10 @@ from bot.keyboards import (
     get_categories_inline_keyboard,
     get_confirmation_keyboard,
     get_period_keyboard,
-    get_transaction_actions_keyboard
+    get_transaction_actions_keyboard,
+    get_settings_keyboard,
+    get_currency_keyboard,
+    get_month_start_keyboard
 )
 from config.settings import settings
 from loguru import logger
@@ -610,11 +615,120 @@ async def handle_ai_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Настройки."""
-    await update.message.reply_text(
-        "⚙️ Настройки будут доступны в следующей версии!",
-        reply_markup=get_main_menu_keyboard()
-    )
+    """Показать настройки."""
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        # Получаем текущие настройки
+        settings = get_user_settings(db, db_user.id)
+        currency = settings.get("currency", "RUB")
+        month_start = settings.get("month_start", 1)
+        
+        settings_text = f"""
+⚙️ *Настройки*
+
+*Текущие настройки:*
+💱 Валюта: {currency}
+📅 Начало месяца: {month_start} число
+
+Выбери настройку для изменения:
+        """
+        
+        await update.message.reply_text(
+            settings_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_settings_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при показе настроек: {e}")
+        await update.message.reply_text("❌ Произошла ошибка.")
+    finally:
+        db.close()
+
+
+async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать callback от настроек."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        callback_data = query.data
+        
+        if callback_data == "settings_back":
+            await query.edit_message_text(
+                "⚙️ Настройки закрыты.",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+        elif callback_data == "setting_currency":
+            await query.edit_message_text(
+                "💱 *Выбери валюту:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_currency_keyboard()
+            )
+            return
+        
+        elif callback_data == "setting_month_start":
+            await query.edit_message_text(
+                "📅 *Выбери начало месяца (1-31 число):*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_month_start_keyboard()
+            )
+            return
+        
+        elif callback_data.startswith("currency_"):
+            currency_code = callback_data.split("_")[1]
+            currency_symbols = {
+                "RUB": "₽",
+                "USD": "$",
+                "EUR": "€",
+                "UAH": "₴",
+                "KZT": "₸"
+            }
+            symbol = currency_symbols.get(currency_code, currency_code)
+            
+            update_user_settings(db, db_user.id, {"currency": currency_code})
+            
+            await query.edit_message_text(
+                f"✅ Валюта изменена на {symbol} {currency_code}",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+        elif callback_data.startswith("month_start_"):
+            day = int(callback_data.split("_")[2])
+            update_user_settings(db, db_user.id, {"month_start": day})
+            
+            await query.edit_message_text(
+                f"✅ Начало месяца установлено на {day} число",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке настроек: {e}")
+        await query.edit_message_text("❌ Произошла ошибка.")
+    finally:
+        db.close()
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
