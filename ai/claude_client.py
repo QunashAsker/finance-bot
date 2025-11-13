@@ -13,21 +13,22 @@ class ClaudeClient:
         """Инициализировать клиент Claude."""
         try:
             self.client = Anthropic(api_key=settings.claude_api_key)
-            # Используем актуальное имя модели Claude 3.5 Sonnet
-            # Попробуем разные варианты имен моделей
-            self.model = "claude-3-5-sonnet-20241022"  # Последняя версия
+            # Используем актуальное имя модели Claude 4 Sonnet согласно документации
+            self.model = "claude-sonnet-4-20250514"  # Claude 4 Sonnet
         except Exception as e:
             logger.error(f"Ошибка при инициализации Claude клиента: {e}")
             raise
     
     def _try_models(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1024) -> str:
         """Попробовать разные модели если основная не работает."""
+        # Список моделей согласно официальной документации Claude API
         models_to_try = [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620", 
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307"
+            "claude-sonnet-4-20250514",  # Claude 4 Sonnet (рекомендуется)
+            "claude-opus-4-1-20250805",  # Claude 4 Opus
+            "claude-3-7-sonnet-20250219",  # Claude 3.7 Sonnet
+            "claude-3-opus-20240229",  # Claude 3 Opus
+            "claude-3-sonnet-20240229",  # Claude 3 Sonnet
+            "claude-3-haiku-20240307"  # Claude 3 Haiku (быстрая и дешевая)
         ]
         
         for model_name in models_to_try:
