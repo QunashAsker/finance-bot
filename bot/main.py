@@ -704,7 +704,14 @@ def main():
     
     # Запуск бота
     logger.info("Бот запущен")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True  # Игнорировать старые обновления при перезапуске
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
+        raise
 
 
 if __name__ == "__main__":

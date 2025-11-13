@@ -11,8 +11,12 @@ class ClaudeClient:
     
     def __init__(self):
         """Инициализировать клиент Claude."""
-        self.client = Anthropic(api_key=settings.claude_api_key)
-        self.model = "claude-3-5-sonnet-20241022"
+        try:
+            self.client = Anthropic(api_key=settings.claude_api_key)
+            self.model = "claude-3-5-sonnet-20241022"
+        except Exception as e:
+            logger.error(f"Ошибка при инициализации Claude клиента: {e}")
+            raise
     
     def get_completion(
         self,
