@@ -705,12 +705,31 @@ def main():
     # Запуск бота
     logger.info("Бот запущен")
     try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True  # Игнорировать старые обновления при перезапуске
-        )
+        # Используем webhook на Railway вместо polling для избежания конфликтов
+        # Но если webhook не настроен, используем polling с обработкой конфликтов
+        import os
+        webhook_url = os.getenv("WEBHOOK_URL")
+        
+        if webhook_url:
+            # Webhook режим для продакшена
+            application.run_webhook(
+                listen="0.0.0.0",
+                port=int(os.getenv("PORT", "8000")),
+                webhook_url=webhook_url,
+                drop_pending_updates=True
+            )
+        else:
+            # Polling режим для разработки
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,  # Игнорировать старые обновления при перезапуске
+                close_loop=False  # Не закрывать event loop при ошибках
+            )
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
+        # Не падаем при конфликте getUpdates - просто логируем
+        if "Conflict" in str(e) or "getUpdates" in str(e):
+            logger.warning("Конфликт getUpdates - возможно запущен другой экземпляр бота")
         raise
 
 

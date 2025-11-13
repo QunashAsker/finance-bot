@@ -13,7 +13,8 @@ class ClaudeClient:
         """Инициализировать клиент Claude."""
         try:
             self.client = Anthropic(api_key=settings.claude_api_key)
-            self.model = "claude-3-5-sonnet-20241022"
+            # Используем актуальное имя модели согласно документации
+            self.model = "claude-3-5-sonnet-20240620"
         except Exception as e:
             logger.error(f"Ошибка при инициализации Claude клиента: {e}")
             raise
