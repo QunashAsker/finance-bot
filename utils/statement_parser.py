@@ -17,36 +17,28 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
         # Получаем список категорий для промпта
         categories_str = ", ".join([f"{cat['icon']} {cat['name']}" for cat in user_categories])
         
-        # Формируем промпт для Claude
-        prompt = f"""Проанализируй банковскую выписку в PDF и извлеки все транзакции в формате JSON массива.
+        # Формируем промпт для Claude - просим текстовый список
+        prompt = f"""Проанализируй банковскую выписку в PDF и выпиши списком все транзакции с указанием:
+
+Доход/Расход
+Сумма
+Описание транзакции
+Категория транзакции
 
 Для каждой транзакции определи:
-- date: дата в формате YYYY-MM-DD
-- amount: сумма (положительное число, без знака)
-- type: "income" если это зачисление/доход, "expense" если списание/расход
-- description: описание операции
-- category: наиболее подходящая категория из списка: {categories_str}
+- Тип: "Доход" если это зачисление/доход, "Расход" если списание/расход
+- Сумма: положительное число (без знака)
+- Описание: полное описание операции из выписки
+- Категория: наиболее подходящая категория из списка: {categories_str}
 
-Верни только JSON массив в следующем формате:
-[
-  {{
-    "date": "2024-11-13",
-    "amount": 1000.00,
-    "type": "income",
-    "description": "Зарплата",
-    "category": "Зарплата"
-  }},
-  {{
-    "date": "2024-11-13",
-    "amount": 500.00,
-    "type": "expense",
-    "description": "Оплата в кафе",
-    "category": "Кафе"
-  }}
-]
+Формат вывода для каждой транзакции:
+Доход/Расход: [Доход или Расход]
+Сумма: [число]
+Описание: [текст]
+Категория: [название категории]
 
 Если категория не подходит ни к одной из списка, используй "Прочее".
-Отвечай только JSON массивом без дополнительного текста."""
+Выведи все транзакции из выписки по порядку."""
         
         claude = ClaudeClient()
         
@@ -118,7 +110,7 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
                 logger.error(f"Ошибка при повторной попытке: {retry_error}")
                 raise ValueError(f"Не удалось обработать PDF через Claude API: {api_error}")
         
-        # Извлекаем JSON из ответа
+        # Извлекаем транзакции из текстового ответа
         if message.content and len(message.content) > 0:
             # Получаем текст из ответа
             first_content = message.content[0]
@@ -129,67 +121,13 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
             else:
                 response_text = str(first_content)
             
-            logger.debug(f"Ответ Claude (первые 500 символов): {response_text[:500]}")
+            logger.debug(f"Ответ Claude (первые 1000 символов): {response_text[:1000]}")
             
-            # Пробуем найти JSON массив в ответе
-            import json
-            import re
+            # Парсим текстовый формат транзакций
+            transactions = parse_text_transactions(response_text, categories_list)
             
-            # Убираем markdown код блоки если они есть (```json ... ```)
-            # Сначала удаляем обратные кавычки и метку json
-            cleaned_text = response_text.strip()
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:]  # Убираем ```json
-            elif cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:]  # Убираем ```
-            
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3]  # Убираем закрывающие ```
-            
-            cleaned_text = cleaned_text.strip()
-            
-            transactions = None
-            
-            # Пробуем найти JSON массив через регулярное выражение (жадный поиск)
-            # Используем жадный поиск для захвата всего массива
-            json_pattern = r'\[[\s\S]*\]'
-            json_matches = re.findall(json_pattern, cleaned_text)
-            
-            # Пробуем каждый найденный JSON массив, начиная с самого длинного
-            json_matches.sort(key=len, reverse=True)
-            
-            for json_str in json_matches:
-                try:
-                    # Пробуем распарсить JSON
-                    parsed = json.loads(json_str)
-                    if isinstance(parsed, list) and len(parsed) > 0:
-                        transactions = parsed
-                        logger.info(f"Успешно извлечен JSON массив с {len(transactions)} транзакциями")
-                        break
-                except json.JSONDecodeError as e:
-                    logger.debug(f"Ошибка парсинга JSON: {e}, пробую следующий вариант...")
-                    continue
-            
-            # Если не нашли через regex, пробуем стандартный способ
             if not transactions:
-                json_start = cleaned_text.find("[")
-                json_end = cleaned_text.rfind("]") + 1
-                
-                if json_start != -1 and json_end > json_start:
-                    try:
-                        json_str = cleaned_text[json_start:json_end]
-                        transactions = json.loads(json_str)
-                        if isinstance(transactions, list) and len(transactions) > 0:
-                            logger.info(f"Успешно извлечен JSON массив через стандартный метод с {len(transactions)} транзакциями")
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Ошибка парсинга JSON: {e}")
-                        logger.warning(f"Проблемный JSON (первые 200 символов): {json_str[:200] if 'json_str' in locals() else 'N/A'}")
-            
-            if not transactions or not isinstance(transactions, list):
-                # Если все еще не получилось, пробуем извлечь транзакции из текста через Claude
-                logger.warning("Не удалось извлечь JSON массив. Пробую альтернативный метод...")
-                # Пробуем найти транзакции в тексте вручную
-                raise ValueError(f"Не удалось найти JSON массив в ответе Claude. Ответ (первые 500 символов): {response_text[:500]}")
+                raise ValueError(f"Не удалось извлечь транзакции из ответа Claude. Ответ (первые 500 символов): {response_text[:500]}")
             
             # Валидируем и нормализуем транзакции
             normalized_transactions = []
