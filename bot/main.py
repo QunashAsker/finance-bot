@@ -1397,7 +1397,7 @@ async def handle_quick_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
             amount=transaction_data["amount"],
             category_id=transaction_data["category_id"],
             description=transaction_data["description"],
-            transaction_date=date.today()
+            date=date.today()
         )
         
         user_settings = get_user_settings(db, db_user.id)

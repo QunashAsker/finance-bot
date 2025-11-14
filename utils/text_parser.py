@@ -32,14 +32,10 @@ def parse_transaction_text(text: str) -> Optional[Dict[str, Any]]:
     # Паттерны для распознавания
     # Формат: [знак] [сумма] [описание/мерчант]
     patterns = [
-        # "− 379 Перекрёсток" или "-379 Перекрёсток"
+        # "− 379 Перекрёсток" или "-379 Перекрёсток" или "+1500 зарплата"
         r'^([−\-+])\s*([0-9]+(?:[.,][0-9]{1,2})?)\s+(.+)$',
         # "379 Перекрёсток" (без знака, по умолчанию расход)
         r'^([0-9]+(?:[.,][0-9]{1,2})?)\s+(.+)$',
-        # "+1500 зарплата" или "1500+ зарплата"
-        r'^([0-9]+(?:[.,][0-9]{1,2})?)\s*([+])\s*(.*)$',
-        # "1500 + зарплата"
-        r'^([0-9]+(?:[.,][0-9]{1,2})?)\s+([+])\s+(.+)$',
     ]
     
     for pattern in patterns:
@@ -49,7 +45,7 @@ def parse_transaction_text(text: str) -> Optional[Dict[str, Any]]:
             
             # Определяем тип, сумму и описание в зависимости от паттерна
             if len(groups) == 3:
-                # Паттерн с явным знаком в начале
+                # Паттерн с явным знаком: "− 379 Перекрёсток"
                 sign = groups[0]
                 amount_str = groups[1]
                 merchant = groups[2].strip()
@@ -57,18 +53,10 @@ def parse_transaction_text(text: str) -> Optional[Dict[str, Any]]:
                 # Определяем тип транзакции
                 transaction_type = "income" if sign == "+" else "expense"
             elif len(groups) == 2:
-                # Паттерн без знака или со знаком после суммы
-                if groups[1].isdigit() or '.' in groups[1] or ',' in groups[1]:
-                    # Это "379 Перекрёсток" (без знака)
-                    amount_str = groups[0]
-                    merchant = groups[1].strip()
-                    transaction_type = "expense"  # По умолчанию расход
-                else:
-                    # Это паттерн типа "1500+ зарплата"
-                    amount_str = groups[0]
-                    sign = groups[1] if len(groups) > 1 else ""
-                    merchant = groups[2].strip() if len(groups) > 2 else ""
-                    transaction_type = "income" if sign == "+" else "expense"
+                # Паттерн без знака: "379 Перекрёсток"
+                amount_str = groups[0]
+                merchant = groups[1].strip()
+                transaction_type = "expense"  # По умолчанию расход
             else:
                 continue
             
