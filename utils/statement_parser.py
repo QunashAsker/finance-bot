@@ -119,6 +119,23 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
             if not line:
                 # Пустая строка - возможно разделитель между транзакциями
                 if current_trans and all(k in current_trans for k in ['type', 'amount']):
+                    # ВАЖНО: Проверяем тип транзакции по описанию перед сохранением
+                    if current_trans.get("description"):
+                        desc_lower = current_trans["description"].lower()
+                        # Если в описании есть явные признаки типа транзакции, используем их
+                        if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено", "зарплата", "возврат"]):
+                            current_trans["type"] = "income"
+                        elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "платеж", "покупка", "снятие", "комиссия"]):
+                            current_trans["type"] = "expense"
+                        # Если есть слово "перевод", проверяем контекст
+                        elif "перевод" in desc_lower:
+                            if "входящий" in desc_lower or "от" in desc_lower:
+                                current_trans["type"] = "income"
+                            elif "исходящий" in desc_lower or "себе" in desc_lower:
+                                current_trans["type"] = "expense"
+                    
+                    logger.debug(f"Сохраняю транзакцию: {current_trans['type']} - {current_trans['amount']} - {current_trans.get('description', '')[:50]}")
+                    
                     # Сохраняем транзакцию если есть все необходимые поля
                     transactions.append({
                         "date": current_trans.get("date", datetime.now().date()),
@@ -135,6 +152,23 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
             if re.match(r'Доход/Расход:', line, re.IGNORECASE):
                 # Если уже есть транзакция с полями, сохраняем её перед началом новой
                 if current_trans and all(k in current_trans for k in ['type', 'amount']):
+                    # ВАЖНО: Проверяем тип транзакции по описанию перед сохранением
+                    if current_trans.get("description"):
+                        desc_lower = current_trans["description"].lower()
+                        # Если в описании есть явные признаки типа транзакции, используем их
+                        if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено", "зарплата", "возврат"]):
+                            current_trans["type"] = "income"
+                        elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "платеж", "покупка", "снятие", "комиссия"]):
+                            current_trans["type"] = "expense"
+                        # Если есть слово "перевод", проверяем контекст
+                        elif "перевод" in desc_lower:
+                            if "входящий" in desc_lower or "от" in desc_lower:
+                                current_trans["type"] = "income"
+                            elif "исходящий" in desc_lower or "себе" in desc_lower:
+                                current_trans["type"] = "expense"
+                    
+                    logger.debug(f"Сохраняю транзакцию: {current_trans['type']} - {current_trans['amount']} - {current_trans.get('description', '')[:50]}")
+                    
                     transactions.append({
                         "date": current_trans.get("date", datetime.now().date()),
                         "amount": current_trans["amount"],
@@ -176,13 +210,13 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
         
         # Сохраняем последнюю транзакцию если есть
         if current_trans and all(k in current_trans for k in ['type', 'amount']):
-            # Проверяем тип транзакции по описанию, если он не был определен явно или для уточнения
+            # ВАЖНО: Проверяем тип транзакции по описанию перед сохранением
             if current_trans.get("description"):
                 desc_lower = current_trans["description"].lower()
                 # Если в описании есть явные признаки типа транзакции, используем их
-                if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено"]):
+                if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено", "зарплата", "возврат"]):
                     current_trans["type"] = "income"
-                elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "платеж", "покупка"]):
+                elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "платеж", "покупка", "снятие", "комиссия"]):
                     current_trans["type"] = "expense"
                 # Если есть слово "перевод", проверяем контекст
                 elif "перевод" in desc_lower:
@@ -190,6 +224,8 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
                         current_trans["type"] = "income"
                     elif "исходящий" in desc_lower or "себе" in desc_lower:
                         current_trans["type"] = "expense"
+            
+            logger.debug(f"Сохраняю последнюю транзакцию: {current_trans['type']} - {current_trans['amount']} - {current_trans.get('description', '')[:50]}")
             
             transactions.append({
                 "date": current_trans.get("date", datetime.now().date()),
@@ -331,9 +367,11 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
                 response_text = str(first_content)
             
             logger.debug(f"Ответ Claude (первые 1000 символов): {response_text[:1000]}")
+            logger.info(f"Полный ответ Claude ({len(response_text)} символов): {response_text[:5000]}")  # Логируем до 5000 символов
             
             # Парсим текстовый формат транзакций
             transactions = parse_text_transactions(response_text, user_categories)
+            logger.info(f"После парсинга извлечено {len(transactions)} транзакций")
             
             if not transactions:
                 raise ValueError(f"Не удалось извлечь транзакции из ответа Claude. Ответ (первые 500 символов): {response_text[:500]}")
