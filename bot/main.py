@@ -25,11 +25,18 @@ from database.crud import (
     get_user_settings,
     get_transaction_by_id,
     update_transaction,
-    delete_transaction
+    delete_transaction,
+    bulk_create_transactions
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
 from utils.helpers import format_amount, format_date, parse_amount
+from utils.statement_parser import (
+    parse_pdf_statement,
+    parse_csv_statement,
+    parse_excel_statement,
+    categorize_transactions_batch
+)
 from bot.keyboards import (
     get_main_menu_keyboard,
     get_categories_inline_keyboard,
@@ -1047,6 +1054,206 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         db.close()
 
 
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать загрузку документа (выписки)."""
+    document = update.message.document
+    
+    if not document:
+        await update.message.reply_text("❌ Файл не найден.")
+        return
+    
+    # Проверяем размер файла (максимум 20MB)
+    if document.file_size and document.file_size > 20 * 1024 * 1024:
+        await update.message.reply_text("❌ Файл слишком большой. Максимальный размер: 20MB")
+        return
+    
+    # Определяем тип файла
+    file_name = document.file_name.lower() if document.file_name else ""
+    file_extension = file_name.split(".")[-1] if "." in file_name else ""
+    
+    supported_formats = ["pdf", "csv", "xlsx", "xls"]
+    if file_extension not in supported_formats:
+        await update.message.reply_text(
+            f"❌ Неподдерживаемый формат файла.\n\nПоддерживаемые форматы: PDF, CSV, Excel (.xlsx, .xls)"
+        )
+        return
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        # Получаем категории пользователя для категоризации
+        categories = get_categories_by_user(db, db_user.id)
+        categories_list = [{"name": cat.name, "icon": cat.icon} for cat in categories]
+        
+        await update.message.reply_text("📄 Обрабатываю файл выписки...")
+        
+        # Скачиваем файл
+        file = await context.bot.get_file(document.file_id)
+        file_bytes = await file.download_as_bytearray()
+        
+        # Парсим файл в зависимости от формата
+        transactions = []
+        
+        if file_extension == "pdf":
+            transactions = parse_pdf_statement(bytes(file_bytes), categories_list)
+        elif file_extension == "csv":
+            transactions = parse_csv_statement(bytes(file_bytes))
+            # Категоризируем через Claude если категории не определены
+            if transactions and not transactions[0].get("category_name"):
+                transactions = categorize_transactions_batch(transactions, categories_list)
+        elif file_extension in ["xlsx", "xls"]:
+            transactions = parse_excel_statement(bytes(file_bytes))
+            if transactions and not transactions[0].get("category_name"):
+                transactions = categorize_transactions_batch(transactions, categories_list)
+        
+        if not transactions:
+            await update.message.reply_text(
+                "❌ Не удалось извлечь транзакции из файла. Проверьте формат файла.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+        # Сохраняем транзакции для предпросмотра
+        context.user_data["pending_import"] = transactions
+        
+        # Подсчитываем статистику
+        total_income = sum(t["amount"] for t in transactions if t["type"] == "income")
+        total_expense = sum(t["amount"] for t in transactions if t["type"] == "expense")
+        
+        # Получаем настройки пользователя для форматирования
+        user_settings = get_user_settings(db, db_user.id)
+        
+        # Формируем предпросмотр
+        preview_text = f"""
+📄 *Предпросмотр импорта выписки*
+
+Найдено транзакций: *{len(transactions)}*
+
+*Суммы:*
+💰 Доходы: {format_amount(total_income, user_settings=user_settings)}
+💸 Расходы: {format_amount(total_expense, user_settings=user_settings)}
+💵 Баланс: {format_amount(total_income - total_expense, user_settings=user_settings)}
+
+*Примеры транзакций (первые 5):*
+        """
+        
+        for i, trans in enumerate(transactions[:5], 1):
+            icon = "➕" if trans["type"] == "income" else "➖"
+            category = trans.get("category_name", "Прочее")
+            preview_text += f"\n{i}. {icon} {format_amount(trans['amount'], user_settings=user_settings)} - {category}"
+            if trans.get("description"):
+                preview_text += f"\n   {trans['description'][:50]}"
+            preview_text += f"\n   {format_date(trans['date'])}\n"
+        
+        if len(transactions) > 5:
+            preview_text += f"\n... и еще {len(transactions) - 5} транзакций"
+        
+        preview_text += "\n\nВыбери действие:"
+        
+        await update.message.reply_text(
+            preview_text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_import_confirmation_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке выписки: {e}")
+        await update.message.reply_text(
+            f"❌ Произошла ошибка при обработке файла: {str(e)}",
+            reply_markup=get_main_menu_keyboard()
+        )
+    finally:
+        db.close()
+
+
+async def handle_import_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать callback для импорта выписки."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        callback_data = query.data
+        transactions = context.user_data.get("pending_import", [])
+        
+        if not transactions:
+            await query.edit_message_text("❌ Данные для импорта не найдены.")
+            return
+        
+        if callback_data == "import_confirm_all":
+            # Массовое добавление всех транзакций
+            await query.edit_message_text("⏳ Добавляю транзакции...")
+            
+            # Преобразуем категории из имен в ID
+            categories_dict = {cat.name: cat.id for cat in get_categories_by_user(db, db_user.id)}
+            
+            transactions_to_import = []
+            for trans in transactions:
+                trans_data = {
+                    "date": trans["date"],
+                    "amount": trans["amount"],
+                    "type": trans["type"],
+                    "description": trans.get("description", ""),
+                    "category_name": trans.get("category_name", "Прочее")
+                }
+                transactions_to_import.append(trans_data)
+            
+            created_count, skipped_count = bulk_create_transactions(
+                db, db_user.id, transactions_to_import
+            )
+            
+            result_text = f"""
+✅ *Импорт завершен!*
+
+Добавлено транзакций: *{created_count}*
+Пропущено (дубликаты): *{skipped_count}*
+
+Статистика автоматически обновлена!
+            """
+            
+            await query.edit_message_text(
+                result_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            
+            # Очищаем данные импорта
+            context.user_data.pop("pending_import", None)
+            
+        elif callback_data == "import_edit":
+            # Показываем список для редактирования
+            await query.edit_message_text(
+                "✏️ Редактирование транзакций перед импортом будет доступно в следующей версии.\n\nИспользуй '✅ Добавить все' для импорта.",
+                reply_markup=get_import_confirmation_keyboard()
+            )
+            
+        elif callback_data == "import_cancel":
+            context.user_data.pop("pending_import", None)
+            await query.edit_message_text(
+                "❌ Импорт отменен.",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при импорте транзакций: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при импорте.")
+    finally:
+        db.close()
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     text = update.message.text
@@ -1073,7 +1280,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # Обычное текстовое сообщение - можно использовать для AI парсинга
         await update.message.reply_text(
-            "💡 Отправь команду из меню или используй кнопки ниже.",
+            "💡 Отправь команду из меню или используй кнопки ниже.\n\n💡 Также можно отправить файл выписки (PDF, CSV, Excel) для автоматического импорта транзакций!",
             reply_markup=get_main_menu_keyboard()
         )
 
@@ -1150,6 +1357,8 @@ def main():
     application.add_handler(create_edit_transaction_conversation())
     application.add_handler(CallbackQueryHandler(handle_transaction_callback, pattern="^(edit_transaction_|delete_transaction_)"))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^(setting_|currency_|month_start_|settings_back)"))
+    application.add_handler(CallbackQueryHandler(handle_import_callback, pattern="^import_"))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Запуск бота

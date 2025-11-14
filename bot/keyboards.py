@@ -149,3 +149,17 @@ def get_month_start_keyboard():
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings_back")])
     return InlineKeyboardMarkup(keyboard)
 
+
+def get_import_confirmation_keyboard():
+    """Клавиатура подтверждения импорта выписки."""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Добавить все", callback_data="import_confirm_all"),
+            InlineKeyboardButton("✏️ Редактировать", callback_data="import_edit")
+        ],
+        [
+            InlineKeyboardButton("❌ Отменить", callback_data="import_cancel")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+

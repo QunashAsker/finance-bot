@@ -11,4 +11,5 @@ pydantic-settings==2.1.0
 loguru==0.7.2
 aiofiles==23.2.1
 openpyxl==3.1.2
+pandas==2.1.4
 

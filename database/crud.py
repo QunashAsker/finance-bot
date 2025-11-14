@@ -2,8 +2,9 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime, date, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from database.models import User, Transaction, Category, Budget, TransactionType, BudgetPeriod
+from loguru import logger
 
 
 # ========== User CRUD ==========
@@ -187,6 +188,64 @@ def delete_transaction(db: Session, transaction_id: int) -> bool:
         db.commit()
         return True
     return False
+
+
+def bulk_create_transactions(
+    db: Session,
+    user_id: int,
+    transactions_data: List[Dict[str, Any]]
+) -> tuple[int, int]:
+    """Массовое создание транзакций.
+    
+    Returns:
+        tuple: (количество созданных, количество пропущенных из-за дубликатов)
+    """
+    created_count = 0
+    skipped_count = 0
+    
+    for trans_data in transactions_data:
+        try:
+            # Проверяем на дубликаты (по сумме, дате и описанию)
+            existing = db.query(Transaction).filter(
+                Transaction.user_id == user_id,
+                Transaction.amount == trans_data["amount"],
+                Transaction.date == trans_data["date"],
+                Transaction.description == trans_data.get("description")
+            ).first()
+            
+            if existing:
+                skipped_count += 1
+                continue
+            
+            # Находим категорию по имени
+            category_id = None
+            if trans_data.get("category_name"):
+                category = db.query(Category).filter(
+                    Category.user_id == user_id,
+                    Category.name == trans_data["category_name"]
+                ).first()
+                if category:
+                    category_id = category.id
+            
+            # Создаем транзакцию
+            transaction = Transaction(
+                user_id=user_id,
+                type=TransactionType(trans_data["type"]),
+                amount=trans_data["amount"],
+                category_id=category_id,
+                date=trans_data["date"],
+                description=trans_data.get("description")
+            )
+            db.add(transaction)
+            created_count += 1
+            
+        except Exception as e:
+            logger.error(f"Ошибка при создании транзакции: {e}")
+            skipped_count += 1
+            continue
+    
+    db.commit()
+    return created_count, skipped_count
 
 
 def get_balance(db: Session, user_id: int, start_date: Optional[date] = None, end_date: Optional[date] = None) -> dict:
