@@ -1,11 +1,151 @@
 """Парсер выписок из различных форматов."""
 import base64
 import io
+import re
+import json
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from loguru import logger
 import pandas as pd
 from ai.claude_client import ClaudeClient
+
+
+def parse_text_transactions(text: str, user_categories: List[Dict]) -> List[Dict[str, Any]]:
+    """Парсить транзакции из текстового ответа Claude.
+    
+    Ожидаемый формат:
+    Доход/Расход: Доход
+    Сумма: 150000.00
+    Описание: Входящий перевод СБП...
+    Категория: Прочее
+    
+    Доход/Расход: Расход
+    ...
+    """
+    transactions = []
+    
+    # Разбиваем текст на блоки транзакций
+    # Ищем паттерн "Доход/Расход:" как начало транзакции
+    transaction_pattern = r'Доход/Расход:\s*(Доход|Расход)\s*\n\s*Сумма:\s*([\d\s,\.]+)\s*\n\s*Описание:\s*(.*?)\s*\n\s*Категория:\s*(.+?)(?=\n\s*Доход/Расход:|$)'
+    
+    matches = re.finditer(transaction_pattern, text, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    
+    for match in matches:
+        try:
+            trans_type_text = match.group(1).strip()
+            amount_str = match.group(2).strip()
+            description = match.group(3).strip()
+            category = match.group(4).strip()
+            
+            # Определяем тип транзакции
+            if "доход" in trans_type_text.lower() or "income" in trans_type_text.lower():
+                transaction_type = "income"
+            else:
+                transaction_type = "expense"
+            
+            # Парсим сумму (убираем пробелы и запятые, заменяем запятую на точку)
+            amount_str = amount_str.replace(" ", "").replace(",", ".")
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                logger.warning(f"Не удалось распарсить сумму: {amount_str}")
+                continue
+            
+            # Убираем эмодзи из категории если есть
+            category_clean = re.sub(r'[^\w\s-]', '', category).strip()
+            
+            # Пробуем найти дату в описании или используем текущую дату
+            date = datetime.now().date()
+            date_patterns = [
+                r'(\d{2})\.(\d{2})\.(\d{4})',  # ДД.ММ.ГГГГ
+                r'(\d{4})-(\d{2})-(\d{2})',    # ГГГГ-ММ-ДД
+            ]
+            
+            for pattern in date_patterns:
+                date_match = re.search(pattern, description)
+                if date_match:
+                    try:
+                        if '.' in date_match.group(0):
+                            # ДД.ММ.ГГГГ
+                            day, month, year = date_match.groups()
+                            date = datetime(int(year), int(month), int(day)).date()
+                        else:
+                            # ГГГГ-ММ-ДД
+                            year, month, day = date_match.groups()
+                            date = datetime(int(year), int(month), int(day)).date()
+                        break
+                    except ValueError:
+                        continue
+            
+            transactions.append({
+                "date": date,
+                "amount": amount,
+                "type": transaction_type,
+                "description": description,
+                "category_name": category_clean if category_clean else "Прочее"
+            })
+            
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге транзакции: {e}")
+            continue
+    
+    # Если не нашли через паттерн, пробуем альтернативный метод
+    if not transactions:
+        # Пробуем найти транзакции через более гибкий паттерн
+        lines = text.split('\n')
+        current_trans = {}
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                if current_trans:
+                    # Сохраняем транзакцию если есть все необходимые поля
+                    if all(k in current_trans for k in ['type', 'amount']):
+                        transactions.append({
+                            "date": current_trans.get("date", datetime.now().date()),
+                            "amount": current_trans["amount"],
+                            "type": current_trans["type"],
+                            "description": current_trans.get("description", ""),
+                            "category_name": current_trans.get("category", "Прочее")
+                        })
+                    current_trans = {}
+                continue
+            
+            # Ищем поля транзакции
+            if re.match(r'Доход/Расход:', line, re.IGNORECASE):
+                trans_type = re.search(r'(Доход|Расход)', line, re.IGNORECASE)
+                if trans_type:
+                    current_trans["type"] = "income" if "доход" in trans_type.group(0).lower() else "expense"
+            
+            elif re.match(r'Сумма:', line, re.IGNORECASE):
+                amount_match = re.search(r'([\d\s,\.]+)', line)
+                if amount_match:
+                    amount_str = amount_match.group(1).replace(" ", "").replace(",", ".")
+                    try:
+                        current_trans["amount"] = float(amount_str)
+                    except ValueError:
+                        pass
+            
+            elif re.match(r'Описание:', line, re.IGNORECASE):
+                desc = line.split(':', 1)[1].strip() if ':' in line else line
+                current_trans["description"] = desc
+            
+            elif re.match(r'Категория:', line, re.IGNORECASE):
+                cat = line.split(':', 1)[1].strip() if ':' in line else line
+                current_trans["category"] = re.sub(r'[^\w\s-]', '', cat).strip()
+        
+        # Сохраняем последнюю транзакцию если есть
+        if current_trans and all(k in current_trans for k in ['type', 'amount']):
+            transactions.append({
+                "date": current_trans.get("date", datetime.now().date()),
+                "amount": current_trans["amount"],
+                "type": current_trans["type"],
+                "description": current_trans.get("description", ""),
+                "category_name": current_trans.get("category", "Прочее")
+            })
+    
+    logger.info(f"Извлечено транзакций из текста: {len(transactions)}")
+    return transactions
 
 
 def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[Dict[str, Any]]:
