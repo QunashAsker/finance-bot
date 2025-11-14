@@ -216,14 +216,16 @@ def parse_receipt_text(text: str, user_categories: list) -> Optional[Dict[str, A
         if items_section:
             items_text = items_section.group(1)
             # Паттерн: "1. Молоко 3.2% 1л - 1 x 89 = 89"
-            item_pattern = r'\d+\.\s*(.+?)\s*-\s*([\d\.]+)\s*x\s*([\d\s,\.]+)\s*=\s*([\d\s,\.]+)'
+            # Используем [^\n]+ чтобы не захватывать следующую строку
+            item_pattern = r'(\d+)\.\s*([^\n]+?)\s+-\s+([\d\.]+)\s+x\s+([\d\s,\.]+)\s+=\s+([\d\s,\.]+)'
             
             for item_match in re.finditer(item_pattern, items_text):
                 try:
-                    item_name = item_match.group(1).strip()
-                    quantity = float(item_match.group(2).replace(",", "."))
-                    price = float(item_match.group(3).replace(" ", "").replace(",", "."))
-                    total = float(item_match.group(4).replace(" ", "").replace(",", "."))
+                    item_num = item_match.group(1)
+                    item_name = item_match.group(2).strip()
+                    quantity = float(item_match.group(3).replace(",", "."))
+                    price = float(item_match.group(4).replace(" ", "").replace(",", "."))
+                    total = float(item_match.group(5).replace(" ", "").replace(",", "."))
                     
                     result["items"].append({
                         "name": item_name,
@@ -232,7 +234,7 @@ def parse_receipt_text(text: str, user_categories: list) -> Optional[Dict[str, A
                         "total": total
                     })
                 except Exception as e:
-                    logger.warning(f"Ошибка при парсинге товара: {e}")
+                    logger.warning(f"Ошибка при парсинге товара: {e}, данные: {item_match.groups()}")
                     continue
         
         # Если не извлечено ни одного товара, пробуем более простой паттерн

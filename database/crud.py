@@ -542,9 +542,8 @@ def find_matching_transactions(
         Transaction.date <= date_max,
         Transaction.type == TransactionType.EXPENSE  # Чеки обычно для расходов
     ).order_by(
-        # Сортируем по близости суммы и даты
-        func.abs(Transaction.amount - amount),
-        func.abs(func.extract('epoch', Transaction.date - receipt_date))
+        # Сортируем по близости суммы
+        func.abs(Transaction.amount - amount)
     ).all()
     
     return transactions
