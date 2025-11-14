@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
-from database.models import User, Transaction, Category, Budget, TransactionType, BudgetPeriod, MerchantRule
+from database.models import User, Transaction, Category, Budget, TransactionType, BudgetPeriod, MerchantRule, Receipt
 from loguru import logger
 
 
@@ -437,6 +437,137 @@ def delete_merchant_rule(db: Session, rule_id: int) -> bool:
     if rule:
         db.delete(rule)
         db.commit()
+        return True
+    return False
+
+
+# ========== Receipt CRUD ==========
+
+def create_receipt(
+    db: Session,
+    user_id: int,
+    total_amount: float,
+    store_name: Optional[str] = None,
+    receipt_date: Optional[datetime] = None,
+    vat_amount: Optional[float] = None,
+    receipt_number: Optional[str] = None,
+    image_data: Optional[str] = None,
+    items: Optional[List[Dict]] = None,
+    raw_data: Optional[Dict] = None,
+    transaction_id: Optional[int] = None
+) -> Receipt:
+    """Создать чек."""
+    receipt = Receipt(
+        user_id=user_id,
+        transaction_id=transaction_id,
+        store_name=store_name,
+        receipt_date=receipt_date,
+        total_amount=total_amount,
+        vat_amount=vat_amount,
+        receipt_number=receipt_number,
+        image_data=image_data,
+        items=items,
+        raw_data=raw_data
+    )
+    db.add(receipt)
+    db.commit()
+    db.refresh(receipt)
+    logger.info(f"Создан чек ID:{receipt.id} для пользователя {user_id}, сумма {total_amount}")
+    return receipt
+
+
+def get_receipt_by_id(db: Session, receipt_id: int) -> Optional[Receipt]:
+    """Получить чек по ID."""
+    return db.query(Receipt).filter(Receipt.id == receipt_id).first()
+
+
+def get_receipts_by_user(
+    db: Session,
+    user_id: int,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    limit: int = 50
+) -> List[Receipt]:
+    """Получить чеки пользователя."""
+    query = db.query(Receipt).filter(Receipt.user_id == user_id)
+    
+    if start_date:
+        query = query.filter(Receipt.receipt_date >= start_date)
+    if end_date:
+        query = query.filter(Receipt.receipt_date <= end_date)
+    
+    return query.order_by(Receipt.receipt_date.desc()).limit(limit).all()
+
+
+def get_receipt_by_transaction(db: Session, transaction_id: int) -> Optional[Receipt]:
+    """Получить чек по ID транзакции."""
+    return db.query(Receipt).filter(Receipt.transaction_id == transaction_id).first()
+
+
+def find_matching_transactions(
+    db: Session,
+    user_id: int,
+    amount: float,
+    receipt_date: date,
+    tolerance_percent: float = 5.0,
+    date_tolerance_days: int = 1
+) -> List[Transaction]:
+    """
+    Найти транзакции, соответствующие чеку.
+    
+    Args:
+        user_id: ID пользователя
+        amount: Сумма чека
+        receipt_date: Дата чека
+        tolerance_percent: Допустимое отклонение суммы в процентах
+        date_tolerance_days: Допустимое отклонение даты в днях
+    
+    Returns:
+        List[Transaction]: Список подходящих транзакций
+    """
+    # Рассчитываем границы суммы
+    amount_min = amount * (1 - tolerance_percent / 100)
+    amount_max = amount * (1 + tolerance_percent / 100)
+    
+    # Рассчитываем границы даты
+    date_min = receipt_date - timedelta(days=date_tolerance_days)
+    date_max = receipt_date + timedelta(days=date_tolerance_days)
+    
+    # Ищем транзакции
+    transactions = db.query(Transaction).filter(
+        Transaction.user_id == user_id,
+        Transaction.amount >= amount_min,
+        Transaction.amount <= amount_max,
+        Transaction.date >= date_min,
+        Transaction.date <= date_max,
+        Transaction.type == TransactionType.EXPENSE  # Чеки обычно для расходов
+    ).order_by(
+        # Сортируем по близости суммы и даты
+        func.abs(Transaction.amount - amount),
+        func.abs(func.extract('epoch', Transaction.date - receipt_date))
+    ).all()
+    
+    return transactions
+
+
+def attach_receipt_to_transaction(db: Session, receipt_id: int, transaction_id: int) -> Receipt:
+    """Прикрепить чек к транзакции."""
+    receipt = get_receipt_by_id(db, receipt_id)
+    if receipt:
+        receipt.transaction_id = transaction_id
+        db.commit()
+        db.refresh(receipt)
+        logger.info(f"Чек {receipt_id} прикреплён к транзакции {transaction_id}")
+    return receipt
+
+
+def delete_receipt(db: Session, receipt_id: int) -> bool:
+    """Удалить чек."""
+    receipt = get_receipt_by_id(db, receipt_id)
+    if receipt:
+        db.delete(receipt)
+        db.commit()
+        logger.info(f"Удалён чек {receipt_id}")
         return True
     return False
 

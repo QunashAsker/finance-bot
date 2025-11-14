@@ -28,7 +28,10 @@ from database.crud import (
     delete_transaction,
     bulk_create_transactions,
     get_merchant_rule,
-    create_merchant_rule
+    create_merchant_rule,
+    create_receipt,
+    find_matching_transactions,
+    attach_receipt_to_transaction
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
@@ -47,6 +50,7 @@ from utils.periods import (
     calculate_period_comparison,
     format_comparison_text
 )
+from utils.receipt_processor import process_receipt_image
 from bot.keyboards import (
     get_main_menu_keyboard,
     get_categories_inline_keyboard,
@@ -1130,6 +1134,142 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         db.close()
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать фото чека."""
+    if not update.message.photo:
+        return
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        await update.message.reply_text("📸 Обрабатываю чек...")
+        
+        # Получаем самое качественное фото
+        photo = update.message.photo[-1]
+        
+        # Проверяем размер
+        if photo.file_size and photo.file_size > 5 * 1024 * 1024:
+            await update.message.reply_text("❌ Фото слишком большое. Максимальный размер: 5MB")
+            return
+        
+        # Скачиваем фото
+        file = await context.bot.get_file(photo.file_id)
+        photo_bytes = await file.download_as_bytearray()
+        
+        # Получаем категории пользователя
+        categories = get_categories_by_user(db, db_user.id)
+        categories_list = [
+            {"name": cat.name, "icon": cat.icon, "type": cat.type.value}
+            for cat in categories
+        ]
+        
+        # Обрабатываем чек через Claude
+        receipt_data = process_receipt_image(bytes(photo_bytes), categories_list)
+        
+        if not receipt_data:
+            await update.message.reply_text(
+                "❌ Не удалось распознать чек. Попробуйте сделать фото более чётко.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+        # Создаём чек в БД
+        receipt = create_receipt(
+            db=db,
+            user_id=db_user.id,
+            total_amount=receipt_data["total_amount"],
+            store_name=receipt_data.get("store_name"),
+            receipt_date=receipt_data.get("receipt_date"),
+            vat_amount=receipt_data.get("vat_amount"),
+            receipt_number=receipt_data.get("receipt_number"),
+            image_data=receipt_data.get("image_base64"),
+            items=receipt_data.get("items"),
+            raw_data=receipt_data.get("raw_data")
+        )
+        
+        # Сохраняем данные для дальнейшей обработки
+        context.user_data["pending_receipt"] = {
+            "receipt_id": receipt.id,
+            "data": receipt_data
+        }
+        
+        # Ищем подходящие транзакции
+        matching_transactions = find_matching_transactions(
+            db=db,
+            user_id=db_user.id,
+            amount=receipt_data["total_amount"],
+            receipt_date=receipt_data["receipt_date"].date()
+        )
+        
+        user_settings = get_user_settings(db, db_user.id)
+        
+        # Формируем предпросмотр
+        preview_text = f"""📸 <b>Распознан чек</b>
+
+🏪 <b>Магазин:</b> {receipt_data.get('store_name', 'Не указан')}
+📅 <b>Дата:</b> {receipt_data['receipt_date'].strftime('%d.%m.%Y %H:%M')}
+💰 <b>Сумма:</b> {format_amount(receipt_data['total_amount'], user_settings=user_settings)}"""
+        
+        if receipt_data.get('vat_amount'):
+            preview_text += f"\n📋 <b>НДС:</b> {format_amount(receipt_data['vat_amount'], user_settings=user_settings)}"
+        
+        if receipt_data.get('receipt_number'):
+            preview_text += f"\n🔢 <b>Номер:</b> {receipt_data['receipt_number']}"
+        
+        # Показываем товары
+        items = receipt_data.get('items', [])
+        if items:
+            preview_text += f"\n\n<b>Товары ({len(items)}):</b>"
+            for i, item in enumerate(items[:5], 1):
+                item_name = item['name'][:30]
+                preview_text += f"\n{i}. {item_name} - {format_amount(item['total'], user_settings=user_settings)}"
+            if len(items) > 5:
+                preview_text += f"\n...и ещё {len(items) - 5} товаров"
+        
+        # Создаём клавиатуру
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = []
+        
+        # Если нашли подходящие транзакции
+        if matching_transactions:
+            preview_text += f"\n\n🔍 <b>Найдены похожие транзакции:</b>"
+            for i, trans in enumerate(matching_transactions[:3], 1):
+                cat_name = trans.category.name if trans.category else "Без категории"
+                preview_text += f"\n{i}. {format_amount(trans.amount, user_settings=user_settings)} - {cat_name} ({format_date(trans.date)})"
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"✅ Прикрепить к транзакции #{i}",
+                        callback_data=f"receipt_attach_{trans.id}"
+                    )
+                ])
+        
+        # Кнопка создания новой транзакции
+        keyboard.append([
+            InlineKeyboardButton("➕ Создать новую транзакцию", callback_data="receipt_create_new")
+        ])
+        keyboard.append([
+            InlineKeyboardButton("❌ Отменить", callback_data="receipt_cancel")
+        ])
+        
+        await update.message.reply_text(
+            preview_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке фото чека: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке чека.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    finally:
+        db.close()
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработать загрузку документа (выписки)."""
     document = update.message.document
@@ -1582,6 +1722,104 @@ async def handle_skip_rule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("✅ Транзакция добавлена!")
 
 
+async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать callback для чека."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        user_settings = get_user_settings(db, db_user.id)
+        
+        receipt_data = context.user_data.get("pending_receipt")
+        if not receipt_data:
+            await query.edit_message_text("❌ Данные чека не найдены.")
+            return
+        
+        receipt_id = receipt_data["receipt_id"]
+        data = receipt_data["data"]
+        
+        # Прикрепить к существующей транзакции
+        if query.data.startswith("receipt_attach_"):
+            transaction_id = int(query.data.replace("receipt_attach_", ""))
+            
+            attach_receipt_to_transaction(db, receipt_id, transaction_id)
+            
+            await query.edit_message_text(
+                f"✅ Чек прикреплён к транзакции!\n\n"
+                f"💰 Сумма: {format_amount(data['total_amount'], user_settings=user_settings)}\n"
+                f"🏪 Магазин: {data.get('store_name', 'Не указан')}",
+                parse_mode=ParseMode.HTML
+            )
+            
+            context.user_data.pop("pending_receipt", None)
+        
+        # Создать новую транзакцию
+        elif query.data == "receipt_create_new":
+            # Находим категорию по предложенному названию
+            category_id = None
+            suggested_category = data.get("suggested_category", "Прочее")
+            categories = get_categories_by_user(db, db_user.id)
+            for cat in categories:
+                if cat.name == suggested_category and cat.type == TType.EXPENSE:
+                    category_id = cat.id
+                    break
+            
+            # Если категория не найдена, ищем "Прочее"
+            if not category_id:
+                for cat in categories:
+                    if cat.name == "Прочее" and cat.type == TType.EXPENSE:
+                        category_id = cat.id
+                        break
+            
+            # Создаём транзакцию
+            transaction = create_transaction(
+                db=db,
+                user_id=db_user.id,
+                transaction_type="expense",
+                amount=data["total_amount"],
+                category_id=category_id,
+                description=f"Чек {data.get('store_name', 'магазин')}",
+                date=data["receipt_date"].date()
+            )
+            
+            # Прикрепляем чек
+            attach_receipt_to_transaction(db, receipt_id, transaction.id)
+            
+            category_name = None
+            if category_id:
+                category = get_category_by_id(db, category_id)
+                category_name = category.name if category else "Прочее"
+            else:
+                category_name = "Прочее"
+            
+            await query.edit_message_text(
+                f"✅ Транзакция создана и чек прикреплён!\n\n"
+                f"💰 Сумма: {format_amount(data['total_amount'], user_settings=user_settings)}\n"
+                f"📁 Категория: {category_name}\n"
+                f"🏪 Магазин: {data.get('store_name', 'Не указан')}",
+                parse_mode=ParseMode.HTML
+            )
+            
+            context.user_data.pop("pending_receipt", None)
+        
+        # Отменить
+        elif query.data == "receipt_cancel":
+            # Можно удалить чек из БД, если не хотим хранить непривязанные
+            # delete_receipt(db, receipt_id)
+            
+            await query.edit_message_text("❌ Обработка чека отменена.")
+            context.user_data.pop("pending_receipt", None)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке callback чека: {e}")
+        await query.edit_message_text("❌ Произошла ошибка.")
+    finally:
+        db.close()
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     text = update.message.text
@@ -1708,6 +1946,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_quick_cancel, pattern="^quick_cancel$"))
     application.add_handler(CallbackQueryHandler(handle_save_merchant_rule, pattern="^save_rule_"))
     application.add_handler(CallbackQueryHandler(handle_skip_rule, pattern="^skip_rule$"))
+    application.add_handler(CallbackQueryHandler(handle_receipt_callback, pattern="^receipt_"))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     

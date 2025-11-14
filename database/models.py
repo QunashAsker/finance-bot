@@ -70,6 +70,7 @@ class Transaction(Base):
     # Связи
     user = relationship("User", back_populates="transactions")
     category = relationship("Category", back_populates="transactions")
+    receipt = relationship("Receipt", back_populates="transaction", uselist=False)
 
 
 class Budget(Base):
@@ -105,4 +106,33 @@ class MerchantRule(Base):
     # Связи
     user = relationship("User")
     category = relationship("Category")
+
+
+class Receipt(Base):
+    """Модель чека."""
+    __tablename__ = "receipts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=True)  # Может быть не привязан к транзакции
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # Данные чека
+    store_name = Column(String(255), nullable=True)  # Название магазина
+    receipt_date = Column(DateTime, nullable=True)  # Дата и время чека
+    total_amount = Column(Float, nullable=False)  # Общая сумма
+    vat_amount = Column(Float, nullable=True)  # НДС
+    receipt_number = Column(String(100), nullable=True)  # Номер чека
+    
+    # Изображение чека
+    image_data = Column(Text, nullable=True)  # base64 изображения
+    
+    # Структурированные данные
+    items = Column(JSON, nullable=True)  # Список товаров [{name, price, quantity, total}]
+    raw_data = Column(JSON, nullable=True)  # Полные данные от OCR
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Связи
+    transaction = relationship("Transaction", back_populates="receipt")
+    user = relationship("User")
 
