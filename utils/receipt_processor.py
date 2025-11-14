@@ -217,7 +217,8 @@ def parse_receipt_text(text: str, user_categories: list) -> Optional[Dict[str, A
             items_text = items_section.group(1)
             # Паттерн: "1. Молоко 3.2% 1л - 1 x 89 = 89"
             # Используем [^\n]+ чтобы не захватывать следующую строку
-            item_pattern = r'(\d+)\.\s*([^\n]+?)\s+-\s+([\d\.]+)\s+x\s+([\d\s,\.]+)\s+=\s+([\d\s,\.]+)'
+            # В конце используем (?=\n|\s*$) чтобы остановиться перед переносом строки
+            item_pattern = r'(\d+)\.\s*([^\n]+?)\s+-\s+([\d\.]+)\s+x\s+([\d\s,\.]+)\s+=\s+([\d,\.]+)(?=\n|\s*$)'
             
             for item_match in re.finditer(item_pattern, items_text):
                 try:

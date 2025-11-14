@@ -1744,13 +1744,22 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         # Прикрепить к существующей транзакции
         if query.data.startswith("receipt_attach_"):
             transaction_id = int(query.data.replace("receipt_attach_", ""))
+            logger.info(f"Прикрепление чека {receipt_id} к существующей транзакции {transaction_id}")
             
             attach_receipt_to_transaction(db, receipt_id, transaction_id)
             
+            # Получаем информацию о транзакции
+            transaction = get_transaction_by_id(db, transaction_id)
+            category_name = transaction.category.name if transaction and transaction.category else "Без категории"
+            
+            logger.info(f"Чек {receipt_id} прикреплён к транзакции {transaction_id} (существующая, статистика не изменилась)")
+            
             await query.edit_message_text(
-                f"✅ Чек прикреплён к транзакции!\n\n"
+                f"✅ Чек прикреплён к существующей транзакции!\n\n"
                 f"💰 Сумма: {format_amount(data['total_amount'], user_settings=user_settings)}\n"
-                f"🏪 Магазин: {data.get('store_name', 'Не указан')}",
+                f"📁 Категория: {category_name}\n"
+                f"🏪 Магазин: {data.get('store_name', 'Не указан')}\n\n"
+                f"ℹ️ Статистика не изменилась - транзакция уже существовала.",
                 parse_mode=ParseMode.HTML
             )
             
@@ -1758,6 +1767,8 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
         
         # Создать новую транзакцию
         elif query.data == "receipt_create_new":
+            logger.info(f"Создание новой транзакции из чека {receipt_id}")
+            
             # Находим категорию по предложенному названию
             category_id = None
             suggested_category = data.get("suggested_category", "Прочее")
@@ -1774,6 +1785,8 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
                         category_id = cat.id
                         break
             
+            logger.info(f"Категория для чека: {suggested_category} (ID: {category_id})")
+            
             # Создаём транзакцию
             transaction = create_transaction(
                 db=db,
@@ -1784,6 +1797,8 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
                 description=f"Чек {data.get('store_name', 'магазин')}",
                 date=data["receipt_date"].date()
             )
+            
+            logger.info(f"Транзакция создана: ID {transaction.id}, сумма {transaction.amount}")
             
             # Прикрепляем чек
             attach_receipt_to_transaction(db, receipt_id, transaction.id)
@@ -1803,6 +1818,7 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
                 parse_mode=ParseMode.HTML
             )
             
+            logger.info(f"Чек {receipt_id} успешно обработан, транзакция {transaction.id} создана")
             context.user_data.pop("pending_receipt", None)
         
         # Отменить
