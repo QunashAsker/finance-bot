@@ -10,7 +10,7 @@ import pandas as pd
 from ai.claude_client import ClaudeClient
 
 
-def parse_text_transactions(text: str, user_categories: List[Dict]) -> List[Dict[str, Any]]:
+def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> List[Dict[str, Any]]:
     """Парсить транзакции из текстового ответа Claude.
     
     Ожидаемый формат:
@@ -264,7 +264,7 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
             logger.debug(f"Ответ Claude (первые 1000 символов): {response_text[:1000]}")
             
             # Парсим текстовый формат транзакций
-            transactions = parse_text_transactions(response_text, categories_list)
+            transactions = parse_text_transactions(response_text, user_categories)
             
             if not transactions:
                 raise ValueError(f"Не удалось извлечь транзакции из ответа Claude. Ответ (первые 500 символов): {response_text[:500]}")
