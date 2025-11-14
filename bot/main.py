@@ -144,33 +144,36 @@ async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         recent_transactions = get_transactions_by_user(db, db_user.id, limit=5)
         
         balance_text = f"""
-💰 *Твой баланс*
+💰 <b>Твой баланс</b>
 
-*Общий баланс:*
+<b>Общий баланс:</b>
 {format_amount(total_balance['balance'])}
 
-*За текущий месяц:*
+<b>За текущий месяц:</b>
 Доходы: {format_amount(month_balance['income'])}
 Расходы: {format_amount(month_balance['expense'])}
 Баланс: {format_amount(month_balance['balance'])}
 
-*Последние операции:*
+<b>Последние операции:</b>
         """
         
         if recent_transactions:
             for trans in recent_transactions:
                 icon = "➕" if trans.type == TType.INCOME else "➖"
                 category_name = trans.category.name if trans.category else "Без категории"
+                # Экранируем HTML символы
+                category_name = category_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 balance_text += f"\n{icon} {format_amount(trans.amount)} - {category_name}"
                 if trans.description:
-                    balance_text += f" ({trans.description})"
+                    desc_escaped = trans.description.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    balance_text += f" ({desc_escaped})"
                 balance_text += f"\n   {format_date(trans.date)}"
         else:
             balance_text += "\nНет операций"
         
         await update.message.reply_text(
             balance_text,
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=get_main_menu_keyboard()
         )
     except Exception as e:
@@ -396,31 +399,21 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        history_text = "📜 *История транзакций*\n\n"
-        
-        for trans in transactions:
-            icon = "➕" if trans.type == TType.INCOME else "➖"
-            category_name = trans.category.name if trans.category else "Без категории"
-            history_text += f"{icon} *{format_amount(trans.amount)}*\n"
-            history_text += f"   {category_name}"
-            if trans.description:
-                history_text += f" - {trans.description}"
-            history_text += f"\n   {format_date(trans.date)}\n"
-            # Добавляем кнопки редактирования для каждой транзакции
-            history_text += f"   [ID: {trans.id}]\n\n"
-        
         # Отправляем сообщение с кнопками для каждой транзакции
         for trans in transactions:
             icon = "➕" if trans.type == TType.INCOME else "➖"
             category_name = trans.category.name if trans.category else "Без категории"
-            trans_text = f"{icon} {format_amount(trans.amount)} - {category_name}"
+            # Экранируем HTML символы
+            category_name = category_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            trans_text = f"{icon} <b>{format_amount(trans.amount)}</b> - {category_name}"
             if trans.description:
-                trans_text += f"\n{trans.description}"
+                desc_escaped = trans.description.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                trans_text += f"\n{desc_escaped}"
             trans_text += f"\n{format_date(trans.date)}"
             
             await update.message.reply_text(
                 trans_text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=get_transaction_actions_keyboard(trans.id)
             )
         
