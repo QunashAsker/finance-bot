@@ -176,6 +176,21 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
         
         # Сохраняем последнюю транзакцию если есть
         if current_trans and all(k in current_trans for k in ['type', 'amount']):
+            # Проверяем тип транзакции по описанию, если он не был определен явно или для уточнения
+            if current_trans.get("description"):
+                desc_lower = current_trans["description"].lower()
+                # Если в описании есть явные признаки типа транзакции, используем их
+                if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено"]):
+                    current_trans["type"] = "income"
+                elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "платеж", "покупка"]):
+                    current_trans["type"] = "expense"
+                # Если есть слово "перевод", проверяем контекст
+                elif "перевод" in desc_lower:
+                    if "входящий" in desc_lower or "от" in desc_lower:
+                        current_trans["type"] = "income"
+                    elif "исходящий" in desc_lower or "себе" in desc_lower:
+                        current_trans["type"] = "expense"
+            
             transactions.append({
                 "date": current_trans.get("date", datetime.now().date()),
                 "amount": current_trans["amount"],
