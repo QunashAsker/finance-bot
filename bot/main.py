@@ -199,6 +199,7 @@ async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_income_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать добавление дохода."""
+    logger.info(f"Пользователь {update.effective_user.id} начал добавление дохода")
     context.user_data["transaction_type"] = TType.INCOME
     await update.message.reply_text(
         "💵 *Добавление дохода*\n\nВведи сумму:",
@@ -209,6 +210,7 @@ async def add_income_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начать добавление расхода."""
+    logger.info(f"Пользователь {update.effective_user.id} начал добавление расхода")
     context.user_data["transaction_type"] = TType.EXPENSE
     await update.message.reply_text(
         "💸 *Добавление расхода*\n\nВведи сумму:",
@@ -219,9 +221,11 @@ async def add_expense_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработать ввод суммы."""
+    logger.info(f"Обработка суммы для пользователя {update.effective_user.id}: {update.message.text}")
     amount = parse_amount(update.message.text)
     
     if amount is None or amount <= 0:
+        logger.warning(f"Неверная сумма: {update.message.text}")
         await update.message.reply_text("❌ Неверная сумма. Попробуй еще раз:")
         return AMOUNT
     
@@ -229,6 +233,7 @@ async def process_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     transaction_type = context.user_data.get("transaction_type")
     
     if transaction_type is None:
+        logger.error(f"Тип транзакции не найден для пользователя {update.effective_user.id}")
         await update.message.reply_text("❌ Ошибка. Начни заново.")
         return ConversationHandler.END
     
@@ -351,13 +356,18 @@ async def confirm_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
+    logger.info(f"Подтверждение транзакции для пользователя {update.effective_user.id}")
+    
     db = SessionLocal()
     try:
         pending = bot_state.get_pending(update.effective_user.id)
         
         if not pending:
+            logger.error(f"Pending данные не найдены для пользователя {update.effective_user.id}")
             await query.edit_message_text("❌ Ошибка. Данные не найдены.")
             return
+        
+        logger.info(f"Создание транзакции: тип={pending['type']}, сумма={pending['amount']}")
         
         db_user = get_or_create_user(db, update.effective_user.id)
         
@@ -369,6 +379,8 @@ async def confirm_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE
             category_id=pending.get("category_id"),
             description=pending.get("description")
         )
+        
+        logger.info(f"Транзакция создана: ID {transaction.id}, сумма {transaction.amount}")
         
         trans_type = "Доход" if pending["type"] == TType.INCOME else "Расход"
         await query.edit_message_text(
@@ -1839,6 +1851,7 @@ async def handle_receipt_callback(update: Update, context: ContextTypes.DEFAULT_
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     text = update.message.text
+    logger.debug(f"handle_text получил сообщение от {update.effective_user.id}: {text}")
     
     # Проверяем, ожидается ли вопрос для AI
     if context.user_data.get("waiting_for_ai_question"):
@@ -1846,9 +1859,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Проверяем, не является ли это командой из меню
+    # ВАЖНО: "➕ Добавить доход" и "➖ Добавить расход" обрабатываются через ConversationHandler!
     menu_commands = {
-        "➕ Добавить доход": add_income_start,
-        "➖ Добавить расход": add_expense_start,
         "💰 Баланс": show_balance,
         "📊 Категории": show_categories,
         "📜 История": show_history,
@@ -1858,6 +1870,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     if text in menu_commands:
+        logger.info(f"Обработка команды меню: {text}")
         await menu_commands[text](update, context)
         return
     
@@ -1866,9 +1879,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if parsed:
         # Успешно распарсили транзакцию - запускаем автокатегоризацию
+        logger.info(f"Быстрое добавление транзакции: {parsed['amount']} {parsed['merchant']} (тип: {parsed['type']})")
         await handle_quick_transaction(update, context, parsed)
     else:
         # Обычное текстовое сообщение
+        logger.debug(f"Сообщение не распознано как транзакция: {text}")
         await update.message.reply_text(
             "💡 Отправь команду из меню или используй кнопки ниже.\n\n"
             "📝 Быстрое добавление транзакции:\n"
