@@ -1,7 +1,7 @@
 """Автокатегоризация транзакций через Claude AI."""
 from typing import Dict, List, Optional, Any
 from loguru import logger
-from services.claude import ClaudeClient
+from ai.claude_client import ClaudeClient
 
 
 def auto_categorize_transaction(
@@ -76,7 +76,7 @@ def auto_categorize_transaction(
 
         # Запрос к Claude
         claude = ClaudeClient()
-        response = claude.send_message(prompt)
+        response = claude.get_completion(prompt, max_tokens=512)
         
         # Парсим ответ
         result = parse_categorization_response(response, filtered_categories)
