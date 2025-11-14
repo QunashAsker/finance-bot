@@ -51,69 +51,163 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
         claude = ClaudeClient()
         
         # Отправляем PDF в Claude через document API
-        request_params = {
-            "model": claude.model,
-            "max_tokens": 4096,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": pdf_base64
+        # Согласно документации Claude API, для PDF используется формат document с base64
+        try:
+            request_params = {
+                "model": claude.model,
+                "max_tokens": 4096,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf_base64
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
                             }
-                        },
+                        ]
+                    }
+                ]
+            }
+            
+            message = claude.client.messages.create(**request_params)
+        except Exception as api_error:
+            logger.error(f"Ошибка при запросе к Claude API: {api_error}")
+            # Пробуем альтернативный формат или другую модель
+            try:
+                # Пробуем использовать другую модель через fallback
+                logger.info("Пробую альтернативный метод...")
+                # Используем текстовый промпт с просьбой вернуть JSON
+                alternative_prompt = f"""{prompt}
+
+ВАЖНО: Верни ТОЛЬКО валидный JSON массив без дополнительного текста, комментариев или объяснений. Начни ответ сразу с символа '[' и закончи символом ']'."""
+                
+                request_params = {
+                    "model": claude.model,
+                    "max_tokens": 4096,
+                    "messages": [
                         {
-                            "type": "text",
-                            "text": prompt
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "application/pdf",
+                                        "data": pdf_base64
+                                    }
+                                },
+                                {
+                                    "type": "text",
+                                    "text": alternative_prompt
+                                }
+                            ]
                         }
                     ]
                 }
-            ]
-        }
-        
-        message = claude.client.messages.create(**request_params)
+                
+                message = claude.client.messages.create(**request_params)
+            except Exception as retry_error:
+                logger.error(f"Ошибка при повторной попытке: {retry_error}")
+                raise ValueError(f"Не удалось обработать PDF через Claude API: {api_error}")
         
         # Извлекаем JSON из ответа
         if message.content and len(message.content) > 0:
-            response_text = message.content[0].text
-            
-            # Находим JSON массив в ответе
-            json_start = response_text.find("[")
-            json_end = response_text.rfind("]") + 1
-            
-            if json_start != -1 and json_end > json_start:
-                import json
-                json_str = response_text[json_start:json_end]
-                transactions = json.loads(json_str)
-                
-                # Валидируем и нормализуем транзакции
-                normalized_transactions = []
-                for trans in transactions:
-                    try:
-                        # Парсим дату
-                        if isinstance(trans.get("date"), str):
-                            parsed_date = datetime.strptime(trans["date"], "%Y-%m-%d").date()
-                        else:
-                            parsed_date = datetime.now().date()
-                        
-                        normalized_transactions.append({
-                            "date": parsed_date,
-                            "amount": float(trans.get("amount", 0)),
-                            "type": trans.get("type", "expense"),
-                            "description": trans.get("description", ""),
-                            "category_name": trans.get("category", "Прочее")
-                        })
-                    except Exception as e:
-                        logger.warning(f"Ошибка при нормализации транзакции: {e}")
-                        continue
-                
-                return normalized_transactions
+            # Получаем текст из ответа
+            first_content = message.content[0]
+            if hasattr(first_content, 'text'):
+                response_text = first_content.text
+            elif isinstance(first_content, dict) and 'text' in first_content:
+                response_text = first_content['text']
             else:
-                raise ValueError("Не удалось найти JSON массив в ответе Claude")
+                response_text = str(first_content)
+            
+            logger.debug(f"Ответ Claude (первые 500 символов): {response_text[:500]}")
+            
+            # Пробуем найти JSON массив в ответе
+            import json
+            import re
+            
+            # Сначала пробуем найти JSON массив через регулярное выражение
+            json_pattern = r'\[[\s\S]*?\]'
+            json_matches = re.findall(json_pattern, response_text)
+            
+            transactions = None
+            
+            # Пробуем каждый найденный JSON массив
+            for json_str in json_matches:
+                try:
+                    transactions = json.loads(json_str)
+                    if isinstance(transactions, list) and len(transactions) > 0:
+                        break
+                except json.JSONDecodeError:
+                    continue
+            
+            # Если не нашли через regex, пробуем стандартный способ
+            if not transactions:
+                json_start = response_text.find("[")
+                json_end = response_text.rfind("]") + 1
+                
+                if json_start != -1 and json_end > json_start:
+                    try:
+                        json_str = response_text[json_start:json_end]
+                        transactions = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Ошибка парсинга JSON: {e}")
+                        logger.warning(f"Проблемный JSON: {json_str[:200]}")
+            
+            if not transactions or not isinstance(transactions, list):
+                # Если все еще не получилось, пробуем извлечь транзакции из текста через Claude
+                logger.warning("Не удалось извлечь JSON массив. Пробую альтернативный метод...")
+                # Пробуем найти транзакции в тексте вручную
+                raise ValueError(f"Не удалось найти JSON массив в ответе Claude. Ответ: {response_text[:500]}")
+            
+            # Валидируем и нормализуем транзакции
+            normalized_transactions = []
+            for trans in transactions:
+                try:
+                    # Парсим дату
+                    if isinstance(trans.get("date"), str):
+                        # Пробуем разные форматы даты
+                        date_formats = ["%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d"]
+                        parsed_date = None
+                        for fmt in date_formats:
+                            try:
+                                parsed_date = datetime.strptime(trans["date"], fmt).date()
+                                break
+                            except ValueError:
+                                continue
+                        if not parsed_date:
+                            parsed_date = datetime.now().date()
+                    else:
+                        parsed_date = datetime.now().date()
+                    
+                    amount = float(trans.get("amount", 0))
+                    if amount <= 0:
+                        continue  # Пропускаем нулевые или отрицательные суммы
+                    
+                    normalized_transactions.append({
+                        "date": parsed_date,
+                        "amount": amount,
+                        "type": trans.get("type", "expense"),
+                        "description": trans.get("description", ""),
+                        "category_name": trans.get("category", "Прочее")
+                    })
+                except Exception as e:
+                    logger.warning(f"Ошибка при нормализации транзакции: {e}, данные: {trans}")
+                    continue
+            
+            if not normalized_transactions:
+                raise ValueError("Не удалось извлечь ни одной транзакции из ответа Claude")
+            
+            return normalized_transactions
         else:
             raise ValueError("Пустой ответ от Claude API")
             

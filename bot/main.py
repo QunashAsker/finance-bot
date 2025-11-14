@@ -1301,7 +1301,8 @@ def create_income_conversation():
                 CallbackQueryHandler(cancel_transaction, pattern="^cancel$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_transaction)]
+        fallbacks=[CommandHandler("cancel", cancel_transaction)],
+        per_message=True
     )
 
 
@@ -1321,7 +1322,8 @@ def create_expense_conversation():
                 CallbackQueryHandler(cancel_transaction, pattern="^cancel$")
             ]
         },
-        fallbacks=[CommandHandler("cancel", cancel_transaction)]
+        fallbacks=[CommandHandler("cancel", cancel_transaction)],
+        per_message=True
     )
 
 
@@ -1338,7 +1340,8 @@ def create_edit_transaction_conversation():
                 CommandHandler("skip", skip_edit_description)
             ]
         },
-        fallbacks=[CommandHandler("cancel", skip_edit_description)]
+        fallbacks=[CommandHandler("cancel", skip_edit_description)],
+        per_message=True
     )
 
 
@@ -1386,10 +1389,31 @@ def main():
             )
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
-        # Не падаем при конфликте getUpdates - просто логируем
+        # Не падаем при конфликте getUpdates - просто логируем и ждем
         if "Conflict" in str(e) or "getUpdates" in str(e):
-            logger.warning("Конфликт getUpdates - возможно запущен другой экземпляр бота")
-        raise
+            logger.warning("Конфликт getUpdates - возможно запущен другой экземпляр бота. Ожидание...")
+            import time
+            time.sleep(5)
+            # Пробуем еще раз
+            try:
+                if webhook_url:
+                    application.run_webhook(
+                        listen="0.0.0.0",
+                        port=int(os.getenv("PORT", "8000")),
+                        webhook_url=webhook_url,
+                        drop_pending_updates=True
+                    )
+                else:
+                    application.run_polling(
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True,
+                        close_loop=False
+                    )
+            except Exception as retry_error:
+                logger.error(f"Ошибка при повторной попытке запуска: {retry_error}")
+                raise
+        else:
+            raise
 
 
 if __name__ == "__main__":
