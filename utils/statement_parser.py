@@ -42,10 +42,22 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
             category = match.group(4).strip()
             
             # Определяем тип транзакции
-            if "доход" in trans_type_text.lower() or "income" in trans_type_text.lower():
+            trans_type_lower = trans_type_text.lower()
+            if "доход" in trans_type_lower or "income" in trans_type_lower:
                 transaction_type = "income"
-            else:
+            elif "расход" in trans_type_lower or "expense" in trans_type_lower:
                 transaction_type = "expense"
+            else:
+                # Если тип не определен явно, определяем по описанию
+                desc_lower = description.lower()
+                if any(word in desc_lower for word in ["входящий", "зачисление", "поступление", "начисление", "получен", "получено"]):
+                    transaction_type = "income"
+                elif any(word in desc_lower for word in ["исходящий", "списание", "оплата", "перевод", "платеж", "покупка"]):
+                    transaction_type = "expense"
+                else:
+                    # По умолчанию считаем расходом, если не ясно
+                    transaction_type = "expense"
+                    logger.warning(f"Не удалось определить тип транзакции для: {description[:50]}")
             
             # Парсим сумму (убираем пробелы и запятые, заменяем запятую на точку)
             amount_str = amount_str.replace(" ", "").replace(",", ".")
@@ -136,7 +148,14 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
                 current_trans = {}
                 trans_type = re.search(r'(Доход|Расход)', line, re.IGNORECASE)
                 if trans_type:
-                    current_trans["type"] = "income" if "доход" in trans_type.group(0).lower() else "expense"
+                    trans_type_lower = trans_type.group(0).lower()
+                    if "доход" in trans_type_lower:
+                        current_trans["type"] = "income"
+                    else:
+                        current_trans["type"] = "expense"
+                else:
+                    # Если не нашли явно, по умолчанию расход
+                    current_trans["type"] = "expense"
             
             elif re.match(r'Сумма:', line, re.IGNORECASE):
                 amount_match = re.search(r'([\d\s,\.]+)', line)
