@@ -25,8 +25,8 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
     transactions = []
     
     # Разбиваем текст на блоки транзакций
-    # Ищем паттерн "Доход/Расход:" как начало транзакции
-    transaction_pattern = r'Доход/Расход:\s*(Доход|Расход)\s*\n\s*Сумма:\s*([\d\s,\.]+)\s*\n\s*Описание:\s*(.*?)\s*\n\s*Категория:\s*(.+?)(?=\n\s*Доход/Расход:|$)'
+    # Ищем паттерн "Доход/Расход:" как начало транзакции (может быть с markdown **)
+    transaction_pattern = r'(?:\*\*)?Доход/Расход(?:\*\*)?:\s*\*?\*?(Доход|Расход)\*?\*?\s*\n\s*(?:\*\*)?Сумма(?:\*\*)?:\s*\*?\*?([\d\s,\.]+)\*?\*?\s*\n\s*(?:\*\*)?Описание(?:\*\*)?:\s*\*?\*?(.*?)\s*\n\s*(?:\*\*)?Категория(?:\*\*)?:\s*\*?\*?(.+?)(?=\n\s*(?:\*\*)?Доход/Расход(?:\*\*)?:|$)'
     
     matches = re.finditer(transaction_pattern, text, re.MULTILINE | re.DOTALL | re.IGNORECASE)
     
@@ -111,14 +111,16 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
                     current_trans = {}
                 continue
             
-            # Ищем поля транзакции
-            if re.match(r'Доход/Расход:', line, re.IGNORECASE):
-                trans_type = re.search(r'(Доход|Расход)', line, re.IGNORECASE)
+            # Ищем поля транзакции (убираем markdown форматирование)
+            line_clean = re.sub(r'\*\*|\*', '', line)  # Убираем markdown жирный текст
+            
+            if re.match(r'Доход/Расход:', line_clean, re.IGNORECASE):
+                trans_type = re.search(r'(Доход|Расход)', line_clean, re.IGNORECASE)
                 if trans_type:
                     current_trans["type"] = "income" if "доход" in trans_type.group(0).lower() else "expense"
             
-            elif re.match(r'Сумма:', line, re.IGNORECASE):
-                amount_match = re.search(r'([\d\s,\.]+)', line)
+            elif re.match(r'Сумма:', line_clean, re.IGNORECASE):
+                amount_match = re.search(r'([\d\s,\.]+)', line_clean)
                 if amount_match:
                     amount_str = amount_match.group(1).replace(" ", "").replace(",", ".")
                     try:
@@ -126,12 +128,12 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
                     except ValueError:
                         pass
             
-            elif re.match(r'Описание:', line, re.IGNORECASE):
-                desc = line.split(':', 1)[1].strip() if ':' in line else line
+            elif re.match(r'Описание:', line_clean, re.IGNORECASE):
+                desc = line_clean.split(':', 1)[1].strip() if ':' in line_clean else line_clean
                 current_trans["description"] = desc
             
-            elif re.match(r'Категория:', line, re.IGNORECASE):
-                cat = line.split(':', 1)[1].strip() if ':' in line else line
+            elif re.match(r'Категория:', line_clean, re.IGNORECASE):
+                cat = line_clean.split(':', 1)[1].strip() if ':' in line_clean else line_clean
                 current_trans["category"] = re.sub(r'[^\w\s-]', '', cat).strip()
         
         # Сохраняем последнюю транзакцию если есть
