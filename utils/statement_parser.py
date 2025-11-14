@@ -135,39 +135,61 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
             import json
             import re
             
-            # Сначала пробуем найти JSON массив через регулярное выражение
-            json_pattern = r'\[[\s\S]*?\]'
-            json_matches = re.findall(json_pattern, response_text)
+            # Убираем markdown код блоки если они есть (```json ... ```)
+            # Сначала удаляем обратные кавычки и метку json
+            cleaned_text = response_text.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]  # Убираем ```json
+            elif cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:]  # Убираем ```
+            
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]  # Убираем закрывающие ```
+            
+            cleaned_text = cleaned_text.strip()
             
             transactions = None
             
-            # Пробуем каждый найденный JSON массив
+            # Пробуем найти JSON массив через регулярное выражение (жадный поиск)
+            # Используем жадный поиск для захвата всего массива
+            json_pattern = r'\[[\s\S]*\]'
+            json_matches = re.findall(json_pattern, cleaned_text)
+            
+            # Пробуем каждый найденный JSON массив, начиная с самого длинного
+            json_matches.sort(key=len, reverse=True)
+            
             for json_str in json_matches:
                 try:
-                    transactions = json.loads(json_str)
-                    if isinstance(transactions, list) and len(transactions) > 0:
+                    # Пробуем распарсить JSON
+                    parsed = json.loads(json_str)
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        transactions = parsed
+                        logger.info(f"Успешно извлечен JSON массив с {len(transactions)} транзакциями")
                         break
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.debug(f"Ошибка парсинга JSON: {e}, пробую следующий вариант...")
                     continue
             
             # Если не нашли через regex, пробуем стандартный способ
             if not transactions:
-                json_start = response_text.find("[")
-                json_end = response_text.rfind("]") + 1
+                json_start = cleaned_text.find("[")
+                json_end = cleaned_text.rfind("]") + 1
                 
                 if json_start != -1 and json_end > json_start:
                     try:
-                        json_str = response_text[json_start:json_end]
+                        json_str = cleaned_text[json_start:json_end]
                         transactions = json.loads(json_str)
+                        if isinstance(transactions, list) and len(transactions) > 0:
+                            logger.info(f"Успешно извлечен JSON массив через стандартный метод с {len(transactions)} транзакциями")
                     except json.JSONDecodeError as e:
                         logger.warning(f"Ошибка парсинга JSON: {e}")
-                        logger.warning(f"Проблемный JSON: {json_str[:200]}")
+                        logger.warning(f"Проблемный JSON (первые 200 символов): {json_str[:200] if 'json_str' in locals() else 'N/A'}")
             
             if not transactions or not isinstance(transactions, list):
                 # Если все еще не получилось, пробуем извлечь транзакции из текста через Claude
                 logger.warning("Не удалось извлечь JSON массив. Пробую альтернативный метод...")
                 # Пробуем найти транзакции в тексте вручную
-                raise ValueError(f"Не удалось найти JSON массив в ответе Claude. Ответ: {response_text[:500]}")
+                raise ValueError(f"Не удалось найти JSON массив в ответе Claude. Ответ (первые 500 символов): {response_text[:500]}")
             
             # Валидируем и нормализуем транзакции
             normalized_transactions = []
