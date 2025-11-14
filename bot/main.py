@@ -500,9 +500,9 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         avg_daily = get_average_daily_expense(db, db_user.id, start_date=first_day, end_date=today)
         
         stats_text = f"""
-📈 *Статистика за текущий месяц*
+📈 <b>Статистика за текущий месяц</b>
 
-*Общие показатели:*
+<b>Общие показатели:</b>
 💰 Доходы: {format_amount(month_stats['income'])}
 💸 Расходы: {format_amount(month_stats['expense'])}
 💵 Баланс: {format_amount(month_stats['balance'])}
@@ -511,24 +511,26 @@ async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Топ-5 категорий расходов
         if expense_stats:
-            stats_text += "\n*Топ расходов по категориям:*\n"
+            stats_text += "\n<b>Топ расходов по категориям:</b>\n"
             for i, stat in enumerate(expense_stats[:5], 1):
                 percentage = (stat['total'] / month_stats['expense'] * 100) if month_stats['expense'] > 0 else 0
-                stats_text += f"{i}. {stat['icon']} {stat['name']}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+                cat_name = stat['name'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                stats_text += f"{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
         
         # Топ-5 категорий доходов
         if income_stats:
-            stats_text += "\n*Топ доходов по категориям:*\n"
+            stats_text += "\n<b>Топ доходов по категориям:</b>\n"
             for i, stat in enumerate(income_stats[:5], 1):
                 percentage = (stat['total'] / month_stats['income'] * 100) if month_stats['income'] > 0 else 0
-                stats_text += f"{i}. {stat['icon']} {stat['name']}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+                cat_name = stat['name'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                stats_text += f"{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
         
         if not expense_stats and not income_stats:
             stats_text += "\n📭 Нет транзакций за этот период"
         
         await update.message.reply_text(
             stats_text,
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=get_main_menu_keyboard()
         )
     except Exception as e:
