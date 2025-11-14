@@ -670,6 +670,299 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 
+async def handle_transaction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать callback для редактирования/удаления транзакции."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        callback_data = query.data
+        
+        if callback_data.startswith("edit_transaction_"):
+            transaction_id = int(callback_data.split("_")[2])
+            transaction = get_transaction_by_id(db, transaction_id)
+            
+            if not transaction or transaction.user_id != db_user.id:
+                await query.edit_message_text("❌ Транзакция не найдена.")
+                return
+            
+            # Сохраняем ID транзакции для редактирования
+            context.user_data["editing_transaction_id"] = transaction_id
+            context.user_data["editing_transaction"] = {
+                "amount": transaction.amount,
+                "category_id": transaction.category_id,
+                "date": transaction.date,
+                "description": transaction.description
+            }
+            
+            # Показываем меню редактирования
+            icon = "➕" if transaction.type == TType.INCOME else "➖"
+            category_name = transaction.category.name if transaction.category else "Без категории"
+            
+            edit_text = f"""
+✏️ *Редактирование транзакции*
+
+{icon} Сумма: {format_amount(transaction.amount)}
+📊 Категория: {category_name}
+📅 Дата: {format_date(transaction.date)}
+💬 Описание: {transaction.description or "Нет"}
+
+Выбери поле для редактирования:
+            """
+            
+            await query.edit_message_text(
+                edit_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_edit_transaction_keyboard()
+            )
+            return
+        
+        elif callback_data.startswith("delete_transaction_"):
+            transaction_id = int(callback_data.split("_")[2])
+            transaction = get_transaction_by_id(db, transaction_id)
+            
+            if not transaction or transaction.user_id != db_user.id:
+                await query.edit_message_text("❌ Транзакция не найдена.")
+                return
+            
+            # Удаляем транзакцию
+            delete_transaction(db, transaction_id)
+            
+            await query.edit_message_text(
+                "✅ Транзакция удалена!",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке транзакции: {e}")
+        await query.edit_message_text("❌ Произошла ошибка.")
+    finally:
+        db.close()
+
+
+async def handle_edit_transaction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать callback для редактирования полей транзакции."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        transaction_id = context.user_data.get("editing_transaction_id")
+        if not transaction_id:
+            await query.edit_message_text("❌ Сессия редактирования истекла.")
+            return ConversationHandler.END
+        
+        transaction = get_transaction_by_id(db, transaction_id)
+        if not transaction or transaction.user_id != db_user.id:
+            await query.edit_message_text("❌ Транзакция не найдена.")
+            return ConversationHandler.END
+        
+        callback_data = query.data
+        
+        if callback_data == "edit_field_amount":
+            await query.edit_message_text(
+                "💰 *Редактирование суммы*\n\nВведи новую сумму:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            context.user_data["editing_field"] = "amount"
+            return EDIT_AMOUNT
+        
+        elif callback_data == "edit_field_category":
+            categories = get_categories_by_user(db, db_user.id, transaction_type=transaction.type)
+            if not categories:
+                await query.edit_message_text("❌ Нет доступных категорий.")
+                return ConversationHandler.END
+            
+            await query.edit_message_text(
+                "📊 *Выбери новую категорию:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_categories_inline_keyboard(categories, transaction.type)
+            )
+            context.user_data["editing_field"] = "category"
+            return EDIT_CATEGORY
+        
+        elif callback_data == "edit_field_date":
+            await query.edit_message_text(
+                "📅 *Редактирование даты*\n\nВведи новую дату в формате ДД.ММ.ГГГГ:",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            context.user_data["editing_field"] = "date"
+            return EDIT_DATE
+        
+        elif callback_data == "edit_field_description":
+            await query.edit_message_text(
+                "💬 *Редактирование описания*\n\nВведи новое описание (или /skip чтобы удалить):",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            context.user_data["editing_field"] = "description"
+            return EDIT_DESCRIPTION
+        
+        elif callback_data == "edit_save":
+            # Сохраняем изменения
+            editing_data = context.user_data.get("editing_transaction", {})
+            update_transaction(
+                db=db,
+                transaction_id=transaction_id,
+                amount=editing_data.get("amount"),
+                category_id=editing_data.get("category_id"),
+                date=editing_data.get("date"),
+                description=editing_data.get("description")
+            )
+            
+            # Очищаем данные редактирования
+            context.user_data.pop("editing_transaction_id", None)
+            context.user_data.pop("editing_transaction", None)
+            context.user_data.pop("editing_field", None)
+            
+            await query.edit_message_text(
+                "✅ Транзакция успешно обновлена!",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return ConversationHandler.END
+        
+        elif callback_data == "edit_cancel":
+            # Отменяем редактирование
+            context.user_data.pop("editing_transaction_id", None)
+            context.user_data.pop("editing_transaction", None)
+            context.user_data.pop("editing_field", None)
+            
+            await query.edit_message_text(
+                "❌ Редактирование отменено.",
+                reply_markup=None
+            )
+            await query.message.reply_text(
+                "Выбери действие из меню:",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"Ошибка при редактировании транзакции: {e}")
+        await query.edit_message_text("❌ Произошла ошибка.")
+    finally:
+        db.close()
+    
+    return ConversationHandler.END
+
+
+async def process_edit_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать ввод новой суммы."""
+    amount = parse_amount(update.message.text)
+    
+    if amount is None or amount <= 0:
+        await update.message.reply_text("❌ Неверная сумма. Попробуй еще раз:")
+        return EDIT_AMOUNT
+    
+    editing_data = context.user_data.get("editing_transaction", {})
+    editing_data["amount"] = amount
+    context.user_data["editing_transaction"] = editing_data
+    
+    await update.message.reply_text(
+        f"✅ Сумма изменена на {format_amount(amount)}\n\nВыбери следующее поле для редактирования:",
+        reply_markup=get_edit_transaction_keyboard()
+    )
+    
+    return ConversationHandler.END
+
+
+async def process_edit_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать выбор новой категории."""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "no_categories":
+        await query.edit_message_text("❌ Нет доступных категорий.")
+        return ConversationHandler.END
+    
+    category_id = int(query.data.split("_")[1])
+    
+    editing_data = context.user_data.get("editing_transaction", {})
+    editing_data["category_id"] = category_id
+    context.user_data["editing_transaction"] = editing_data
+    
+    db = SessionLocal()
+    try:
+        category = get_category_by_id(db, category_id)
+        category_name = category.name if category else "Без категории"
+        await query.edit_message_text(
+            f"✅ Категория изменена на {category_name}\n\nВыбери следующее поле для редактирования:",
+            reply_markup=get_edit_transaction_keyboard()
+        )
+    finally:
+        db.close()
+    
+    return ConversationHandler.END
+
+
+async def process_edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать ввод новой даты."""
+    date_text = update.message.text.strip()
+    
+    try:
+        # Парсим дату в формате ДД.ММ.ГГГГ
+        parsed_date = datetime.strptime(date_text, "%d.%m.%Y").date()
+        
+        editing_data = context.user_data.get("editing_transaction", {})
+        editing_data["date"] = parsed_date
+        context.user_data["editing_transaction"] = editing_data
+        
+        await update.message.reply_text(
+            f"✅ Дата изменена на {format_date(parsed_date)}\n\nВыбери следующее поле для редактирования:",
+            reply_markup=get_edit_transaction_keyboard()
+        )
+        
+        return ConversationHandler.END
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат даты. Используй ДД.ММ.ГГГГ (например, 13.11.2024):")
+        return EDIT_DATE
+
+
+async def process_edit_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать ввод нового описания."""
+    description = update.message.text
+    
+    editing_data = context.user_data.get("editing_transaction", {})
+    editing_data["description"] = description
+    context.user_data["editing_transaction"] = editing_data
+    
+    await update.message.reply_text(
+        f"✅ Описание изменено\n\nВыбери следующее поле для редактирования:",
+        reply_markup=get_edit_transaction_keyboard()
+    )
+    
+    return ConversationHandler.END
+
+
+async def skip_edit_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пропустить описание (удалить)."""
+    editing_data = context.user_data.get("editing_transaction", {})
+    editing_data["description"] = None
+    context.user_data["editing_transaction"] = editing_data
+    
+    await update.message.reply_text(
+        "✅ Описание удалено\n\nВыбери следующее поле для редактирования:",
+        reply_markup=get_edit_transaction_keyboard()
+    )
+    
+    return ConversationHandler.END
+
+
 async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработать callback от настроек."""
     query = update.callback_query
@@ -824,6 +1117,23 @@ def create_expense_conversation():
     )
 
 
+def create_edit_transaction_conversation():
+    """Создать ConversationHandler для редактирования транзакции."""
+    return ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_edit_transaction_callback, pattern="^edit_field_|^edit_save$|^edit_cancel$")],
+        states={
+            EDIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_amount)],
+            EDIT_CATEGORY: [CallbackQueryHandler(process_edit_category, pattern="^category_")],
+            EDIT_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_date)],
+            EDIT_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_description),
+                CommandHandler("skip", skip_edit_description)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", skip_edit_description)]
+    )
+
+
 def main():
     """Запустить бота."""
     # Настройка логирования
@@ -836,6 +1146,9 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(create_income_conversation())
     application.add_handler(create_expense_conversation())
+    application.add_handler(create_edit_transaction_conversation())
+    application.add_handler(CallbackQueryHandler(handle_transaction_callback, pattern="^(edit_transaction_|delete_transaction_)"))
+    application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^(setting_|currency_|month_start_|settings_back)"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     # Запуск бота
