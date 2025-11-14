@@ -205,15 +205,19 @@ def bulk_create_transactions(
     
     for trans_data in transactions_data:
         try:
-            # Проверяем на дубликаты (по сумме, дате и описанию)
+            # Проверяем на дубликаты (по сумме, дате, типу и описанию)
+            # Важно: учитываем тип транзакции, так как одна и та же сумма может быть и доходом и расходом
+            transaction_type = TransactionType(trans_data["type"])
             existing = db.query(Transaction).filter(
                 Transaction.user_id == user_id,
+                Transaction.type == transaction_type,
                 Transaction.amount == trans_data["amount"],
                 Transaction.date == trans_data["date"],
-                Transaction.description == trans_data.get("description")
+                Transaction.description == trans_data.get("description", "")
             ).first()
             
             if existing:
+                logger.debug(f"Пропущена дубликат транзакции: {trans_data.get('description', '')[:50]} - {trans_data['amount']} на {trans_data['date']}")
                 skipped_count += 1
                 continue
             

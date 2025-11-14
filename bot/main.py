@@ -1190,6 +1190,9 @@ async def handle_import_callback(update: Update, context: ContextTypes.DEFAULT_T
             
             transactions_to_import = []
             for trans in transactions:
+                # Логируем тип транзакции для отладки
+                logger.info(f"Импортирую транзакцию: тип={trans.get('type')}, сумма={trans.get('amount')}, описание={trans.get('description', '')[:50]}")
+                
                 trans_data = {
                     "date": trans["date"],
                     "amount": trans["amount"],
@@ -1204,17 +1207,17 @@ async def handle_import_callback(update: Update, context: ContextTypes.DEFAULT_T
             )
             
             result_text = f"""
-✅ *Импорт завершен!*
+✅ <b>Импорт завершен!</b>
 
-Добавлено транзакций: *{created_count}*
-Пропущено (дубликаты): *{skipped_count}*
+Добавлено транзакций: <b>{created_count}</b>
+Пропущено (дубликаты): <b>{skipped_count}</b>
 
 Статистика автоматически обновлена!
             """
             
             await query.edit_message_text(
                 result_text,
-                parse_mode=ParseMode.MARKDOWN,
+                parse_mode=ParseMode.HTML,
                 reply_markup=None
             )
             await query.message.reply_text(
