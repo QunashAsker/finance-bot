@@ -187,7 +187,7 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
         try:
             request_params = {
                 "model": claude.model,
-                "max_tokens": 4096,
+                "max_tokens": 8192,  # Увеличено для больших выписок
                 "messages": [
                     {
                         "role": "user",
@@ -223,7 +223,7 @@ def parse_pdf_statement(pdf_bytes: bytes, user_categories: List[Dict]) -> List[D
                 
                 request_params = {
                     "model": claude.model,
-                    "max_tokens": 4096,
+                    "max_tokens": 8192,  # Увеличено для больших выписок
                     "messages": [
                         {
                             "role": "user",
