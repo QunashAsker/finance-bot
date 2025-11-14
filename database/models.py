@@ -88,3 +88,21 @@ class Budget(Base):
     user = relationship("User", back_populates="budgets")
     category = relationship("Category", back_populates="budgets")
 
+
+class MerchantRule(Base):
+    """Модель правила автокатегоризации мерчанта."""
+    __tablename__ = "merchant_rules"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    merchant_name = Column(String(255), nullable=False, index=True)  # Нормализованное название (например "перекрёсток")
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=False)
+    default_description = Column(Text, nullable=True)  # Шаблон описания
+    tags = Column(JSON, default={})  # Дополнительные теги (для будущего расширения)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Связи
+    user = relationship("User")
+    category = relationship("Category")
+

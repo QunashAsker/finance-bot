@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any
-from database.models import User, Transaction, Category, Budget, TransactionType, BudgetPeriod
+from database.models import User, Transaction, Category, Budget, TransactionType, BudgetPeriod, MerchantRule
 from loguru import logger
 
 
@@ -376,4 +376,67 @@ def get_average_daily_expense(
     
     expenses = get_balance(db, user_id, start_date, end_date)["expense"]
     return expenses / days if days > 0 else 0.0
+
+
+# ========== MerchantRule CRUD ==========
+
+def get_merchant_rule(db: Session, user_id: int, merchant_name: str) -> Optional[MerchantRule]:
+    """Получить правило автокатегоризации для мерчанта."""
+    # Нормализуем название мерчанта для поиска (lowercase)
+    normalized_name = merchant_name.lower().strip()
+    return db.query(MerchantRule).filter(
+        MerchantRule.user_id == user_id,
+        func.lower(MerchantRule.merchant_name) == normalized_name
+    ).first()
+
+
+def create_merchant_rule(
+    db: Session,
+    user_id: int,
+    merchant_name: str,
+    category_id: int,
+    default_description: Optional[str] = None
+) -> MerchantRule:
+    """Создать правило автокатегоризации для мерчанта."""
+    # Нормализуем название мерчанта (lowercase, trim)
+    normalized_name = merchant_name.lower().strip()
+    
+    # Проверяем, есть ли уже правило для этого мерчанта
+    existing_rule = get_merchant_rule(db, user_id, normalized_name)
+    if existing_rule:
+        # Обновляем существующее правило
+        existing_rule.category_id = category_id
+        existing_rule.default_description = default_description
+        existing_rule.updated_at = datetime.now()
+        db.commit()
+        db.refresh(existing_rule)
+        return existing_rule
+    
+    # Создаём новое правило
+    rule = MerchantRule(
+        user_id=user_id,
+        merchant_name=normalized_name,
+        category_id=category_id,
+        default_description=default_description
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    logger.info(f"Создано правило для мерчанта '{merchant_name}' пользователя {user_id}")
+    return rule
+
+
+def get_all_merchant_rules(db: Session, user_id: int) -> List[MerchantRule]:
+    """Получить все правила автокатегоризации пользователя."""
+    return db.query(MerchantRule).filter(MerchantRule.user_id == user_id).all()
+
+
+def delete_merchant_rule(db: Session, rule_id: int) -> bool:
+    """Удалить правило автокатегоризации."""
+    rule = db.query(MerchantRule).filter(MerchantRule.id == rule_id).first()
+    if rule:
+        db.delete(rule)
+        db.commit()
+        return True
+    return False
 

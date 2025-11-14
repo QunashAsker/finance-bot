@@ -26,7 +26,9 @@ from database.crud import (
     get_transaction_by_id,
     update_transaction,
     delete_transaction,
-    bulk_create_transactions
+    bulk_create_transactions,
+    get_merchant_rule,
+    create_merchant_rule
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
@@ -37,6 +39,8 @@ from utils.statement_parser import (
     parse_excel_statement,
     categorize_transactions_batch
 )
+from utils.text_parser import parse_transaction_text, normalize_merchant_name
+from utils.auto_categorizer import auto_categorize_transaction, suggest_merchant_description
 from bot.keyboards import (
     get_main_menu_keyboard,
     get_categories_inline_keyboard,
@@ -1253,6 +1257,255 @@ async def handle_import_callback(update: Update, context: ContextTypes.DEFAULT_T
         db.close()
 
 
+async def handle_quick_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE, parsed_data: Dict[str, Any]):
+    """Обработать быструю транзакцию с автокатегоризацией."""
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        amount = parsed_data["amount"]
+        transaction_type = parsed_data["type"]
+        merchant = parsed_data["merchant"]
+        normalized_merchant = normalize_merchant_name(merchant)
+        
+        logger.info(f"Быстрая транзакция от пользователя {user.id}: {transaction_type} {amount} {merchant}")
+        
+        # Получаем категории пользователя
+        categories = get_categories_by_user(db, db_user.id)
+        categories_list = [
+            {
+                "id": cat.id,
+                "name": cat.name,
+                "icon": cat.icon,
+                "type": cat.type.value
+            }
+            for cat in categories
+        ]
+        
+        # Показываем индикатор "печатает..."
+        await update.message.reply_chat_action("typing")
+        
+        # Проверяем, есть ли сохранённое правило для этого мерчанта
+        merchant_rule = get_merchant_rule(db, db_user.id, normalized_merchant)
+        
+        if merchant_rule:
+            # Используем сохранённое правило
+            category_id = merchant_rule.category_id
+            category = get_category_by_id(db, category_id)
+            description = merchant_rule.default_description or suggest_merchant_description(merchant, transaction_type)
+            
+            logger.info(f"Применено правило для мерчанта '{merchant}': категория {category.name}")
+            
+            result_text = f"✨ <b>Применено правило для '{merchant}'</b>\n\n"
+        else:
+            # Автокатегоризация через Claude
+            categorization = auto_categorize_transaction(
+                merchant=merchant,
+                description=merchant,
+                user_categories=categories_list,
+                transaction_type=transaction_type
+            )
+            
+            category_id = categorization.get("category_id")
+            description = categorization.get("suggested_description") or merchant
+            
+            # Если категория не найдена по ID, ищем по имени
+            if not category_id:
+                category_name = categorization.get("category_name", "Прочее")
+                for cat in categories:
+                    if cat.name.lower() == category_name.lower() and cat.type.value == transaction_type:
+                        category_id = cat.id
+                        break
+            
+            category = get_category_by_id(db, category_id) if category_id else None
+            
+            result_text = f"🤖 <b>Автокатегоризация</b>\n\n"
+        
+        # Сохраняем данные в context для дальнейшего подтверждения
+        context.user_data["quick_transaction"] = {
+            "amount": amount,
+            "type": transaction_type,
+            "category_id": category_id,
+            "description": description,
+            "merchant": merchant,
+            "normalized_merchant": normalized_merchant,
+            "has_rule": merchant_rule is not None
+        }
+        
+        # Получаем настройки для форматирования
+        user_settings = get_user_settings(db, db_user.id)
+        
+        # Формируем предпросмотр
+        type_emoji = "➕" if transaction_type == "income" else "➖"
+        type_text = "Доход" if transaction_type == "income" else "Расход"
+        category_text = f"{category.icon} {category.name}" if category else "❓ Не определена"
+        
+        preview = f"""{result_text}{type_emoji} <b>{type_text}</b>: {format_amount(amount, user_settings=user_settings)}
+📁 <b>Категория</b>: {category_text}
+📝 <b>Описание</b>: {description}
+📅 <b>Дата</b>: {format_date(date.today())}
+
+Подтвердить транзакцию?"""
+        
+        # Создаём клавиатуру с кнопками подтверждения
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Подтвердить", callback_data="quick_confirm"),
+                InlineKeyboardButton("❌ Отменить", callback_data="quick_cancel")
+            ]
+        ]
+        
+        await update.message.reply_text(
+            preview,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке быстрой транзакции: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке транзакции. Попробуйте ещё раз.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    finally:
+        db.close()
+
+
+async def handle_quick_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтвердить быструю транзакцию."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        transaction_data = context.user_data.get("quick_transaction")
+        if not transaction_data:
+            await query.edit_message_text("❌ Данные транзакции не найдены.")
+            return
+        
+        # Создаём транзакцию
+        transaction = create_transaction(
+            db=db,
+            user_id=db_user.id,
+            transaction_type=transaction_data["type"],
+            amount=transaction_data["amount"],
+            category_id=transaction_data["category_id"],
+            description=transaction_data["description"],
+            transaction_date=date.today()
+        )
+        
+        user_settings = get_user_settings(db, db_user.id)
+        
+        # Если правила ещё нет, спрашиваем, сохранить ли
+        if not transaction_data.get("has_rule"):
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("💾 Сохранить", callback_data=f"save_rule_{transaction.id}"),
+                    InlineKeyboardButton("❌ Не сейчас", callback_data="skip_rule")
+                ]
+            ]
+            
+            merchant = transaction_data.get("merchant", "")
+            category = get_category_by_id(db, transaction_data["category_id"])
+            category_name = category.name if category else "Неизвестная"
+            
+            await query.edit_message_text(
+                f"✅ Транзакция добавлена: {format_amount(transaction.amount, user_settings=user_settings)}\n\n"
+                f"💡 <b>Сохранить правило?</b>\n"
+                f"При следующей покупке в <b>«{merchant}»</b> автоматически ставить категорию <b>«{category_name}»</b>?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            await query.edit_message_text(
+                f"✅ Транзакция добавлена: {format_amount(transaction.amount, user_settings=user_settings)}",
+                parse_mode=ParseMode.HTML
+            )
+        
+        # Очищаем данные
+        context.user_data.pop("quick_transaction", None)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при подтверждении быстрой транзакции: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при создании транзакции.")
+    finally:
+        db.close()
+
+
+async def handle_quick_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменить быструю транзакцию."""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data.pop("quick_transaction", None)
+    await query.edit_message_text("❌ Транзакция отменена.")
+
+
+async def handle_save_merchant_rule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохранить правило для мерчанта."""
+    query = update.callback_query
+    await query.answer()
+    
+    db = SessionLocal()
+    try:
+        user = update.effective_user
+        db_user = get_or_create_user(db, user.id)
+        
+        # Извлекаем ID транзакции из callback_data
+        transaction_id = int(query.data.split("_")[-1])
+        
+        transaction_data = context.user_data.get("quick_transaction", {})
+        if not transaction_data:
+            await query.edit_message_text("❌ Данные транзакции не найдены.")
+            return
+        
+        # Создаём правило для мерчанта
+        merchant_rule = create_merchant_rule(
+            db=db,
+            user_id=db_user.id,
+            merchant_name=transaction_data["normalized_merchant"],
+            category_id=transaction_data["category_id"],
+            default_description=transaction_data["description"]
+        )
+        
+        merchant = transaction_data.get("merchant", "")
+        category = get_category_by_id(db, transaction_data["category_id"])
+        category_name = category.name if category else "Неизвестная"
+        
+        await query.edit_message_text(
+            f"✅ Транзакция добавлена!\n\n"
+            f"💾 <b>Правило сохранено</b>\n"
+            f"Теперь при покупках в <b>«{merchant}»</b> будет автоматически ставиться категория <b>«{category_name}»</b>",
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Очищаем данные
+        context.user_data.pop("quick_transaction", None)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении правила мерчанта: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при сохранении правила.")
+    finally:
+        db.close()
+
+
+async def handle_skip_rule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пропустить сохранение правила."""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data.pop("quick_transaction", None)
+    await query.edit_message_text("✅ Транзакция добавлена!")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений."""
     text = update.message.text
@@ -1276,11 +1529,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text in menu_commands:
         await menu_commands[text](update, context)
+        return
+    
+    # Пробуем распарсить как транзакцию (например: "− 379 Перекрёсток")
+    parsed = parse_transaction_text(text)
+    
+    if parsed:
+        # Успешно распарсили транзакцию - запускаем автокатегоризацию
+        await handle_quick_transaction(update, context, parsed)
     else:
-        # Обычное текстовое сообщение - можно использовать для AI парсинга
+        # Обычное текстовое сообщение
         await update.message.reply_text(
-            "💡 Отправь команду из меню или используй кнопки ниже.\n\n💡 Также можно отправить файл выписки (PDF, CSV, Excel) для автоматического импорта транзакций!",
-            reply_markup=get_main_menu_keyboard()
+            "💡 Отправь команду из меню или используй кнопки ниже.\n\n"
+            "📝 Быстрое добавление транзакции:\n"
+            "  • <code>− 379 Перекрёсток</code> (расход)\n"
+            "  • <code>+1500 зарплата</code> (доход)\n\n"
+            "💡 Также можно отправить файл выписки (PDF, CSV, Excel) для автоматического импорта транзакций!",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode=ParseMode.HTML
         )
 
 
@@ -1361,6 +1627,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_transaction_callback, pattern="^(edit_transaction_|delete_transaction_)"))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^(setting_|currency_|month_start_|settings_back)"))
     application.add_handler(CallbackQueryHandler(handle_import_callback, pattern="^import_"))
+    application.add_handler(CallbackQueryHandler(handle_quick_confirm, pattern="^quick_confirm$"))
+    application.add_handler(CallbackQueryHandler(handle_quick_cancel, pattern="^quick_cancel$"))
+    application.add_handler(CallbackQueryHandler(handle_save_merchant_rule, pattern="^save_rule_"))
+    application.add_handler(CallbackQueryHandler(handle_skip_rule, pattern="^skip_rule$"))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
