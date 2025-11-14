@@ -83,6 +83,25 @@ def get_transaction_actions_keyboard(transaction_id: int):
     return InlineKeyboardMarkup(keyboard)
 
 
+def get_edit_transaction_keyboard():
+    """Клавиатура выбора поля для редактирования транзакции."""
+    keyboard = [
+        [
+            InlineKeyboardButton("💰 Сумма", callback_data="edit_field_amount"),
+            InlineKeyboardButton("📊 Категория", callback_data="edit_field_category")
+        ],
+        [
+            InlineKeyboardButton("📅 Дата", callback_data="edit_field_date"),
+            InlineKeyboardButton("💬 Описание", callback_data="edit_field_description")
+        ],
+        [
+            InlineKeyboardButton("✅ Сохранить", callback_data="edit_save"),
+            InlineKeyboardButton("❌ Отменить", callback_data="edit_cancel")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def get_settings_keyboard():
     """Клавиатура настроек."""
     keyboard = [

@@ -15,13 +15,17 @@ from database.connection import SessionLocal
 from database.crud import (
     get_or_create_user,
     get_categories_by_user,
+    get_category_by_id,
     create_transaction,
     get_transactions_by_user,
     get_balance,
     get_statistics_by_category,
     get_average_daily_expense,
     update_user_settings,
-    get_user_settings
+    get_user_settings,
+    get_transaction_by_id,
+    update_transaction,
+    delete_transaction
 )
 from database.models import TransactionType as TType
 from utils.default_categories import create_default_categories
@@ -44,6 +48,8 @@ from ai.claude_client import ClaudeClient
 
 # Состояния для ConversationHandler
 AMOUNT, CATEGORY, DESCRIPTION, CONFIRM = range(4)
+# Состояния для редактирования транзакции
+EDIT_AMOUNT, EDIT_CATEGORY, EDIT_DATE, EDIT_DESCRIPTION, EDIT_CONFIRM = range(4, 9)
 
 
 class BotState:
@@ -390,11 +396,27 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             history_text += f"   {category_name}"
             if trans.description:
                 history_text += f" - {trans.description}"
-            history_text += f"\n   {format_date(trans.date)}\n\n"
+            history_text += f"\n   {format_date(trans.date)}\n"
+            # Добавляем кнопки редактирования для каждой транзакции
+            history_text += f"   [ID: {trans.id}]\n\n"
+        
+        # Отправляем сообщение с кнопками для каждой транзакции
+        for trans in transactions:
+            icon = "➕" if trans.type == TType.INCOME else "➖"
+            category_name = trans.category.name if trans.category else "Без категории"
+            trans_text = f"{icon} {format_amount(trans.amount)} - {category_name}"
+            if trans.description:
+                trans_text += f"\n{trans.description}"
+            trans_text += f"\n{format_date(trans.date)}"
+            
+            await update.message.reply_text(
+                trans_text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_transaction_actions_keyboard(trans.id)
+            )
         
         await update.message.reply_text(
-            history_text,
-            parse_mode=ParseMode.MARKDOWN,
+            "Выбери транзакцию для редактирования или удаления:",
             reply_markup=get_main_menu_keyboard()
         )
     except Exception as e:

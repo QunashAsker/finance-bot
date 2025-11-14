@@ -154,6 +154,31 @@ def get_transaction_by_id(db: Session, transaction_id: int) -> Optional[Transact
     return db.query(Transaction).filter(Transaction.id == transaction_id).first()
 
 
+def update_transaction(
+    db: Session,
+    transaction_id: int,
+    amount: Optional[float] = None,
+    category_id: Optional[int] = None,
+    date: Optional[date] = None,
+    description: Optional[str] = None
+) -> Optional[Transaction]:
+    """Обновить транзакцию."""
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    if transaction:
+        if amount is not None:
+            transaction.amount = amount
+        if category_id is not None:
+            transaction.category_id = category_id
+        if date is not None:
+            transaction.date = date
+        if description is not None:
+            transaction.description = description
+        db.commit()
+        db.refresh(transaction)
+        return transaction
+    return None
+
+
 def delete_transaction(db: Session, transaction_id: int) -> bool:
     """Удалить транзакцию."""
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
