@@ -24,11 +24,15 @@ def parse_text_transactions(text: str, user_categories: List[Dict] = None) -> Li
     """
     transactions = []
     
-    # Разбиваем текст на блоки транзакций
-    # Ищем паттерн "Доход/Расход:" как начало транзакции (может быть с markdown **)
-    transaction_pattern = r'(?:\*\*)?Доход/Расход(?:\*\*)?:\s*\*?\*?(Доход|Расход)\*?\*?\s*\n\s*(?:\*\*)?Сумма(?:\*\*)?:\s*\*?\*?([\d\s,\.]+)\*?\*?\s*\n\s*(?:\*\*)?Описание(?:\*\*)?:\s*\*?\*?(.*?)\s*\n\s*(?:\*\*)?Категория(?:\*\*)?:\s*\*?\*?(.+?)(?=\n\s*(?:\*\*)?Доход/Расход(?:\*\*)?:|$)'
+    # Убираем markdown форматирование для упрощения парсинга
+    text_clean = re.sub(r'\*\*|\*', '', text)
     
-    matches = re.finditer(transaction_pattern, text, re.MULTILINE | re.DOTALL | re.IGNORECASE)
+    # Разбиваем текст на блоки транзакций
+    # Ищем паттерн "Доход/Расход:" как начало транзакции
+    # Используем более строгий паттерн для избежания ложных срабатываний
+    transaction_pattern = r'Доход/Расход:\s*(Доход|Расход)\s*\n\s*Сумма:\s*([\d\s,\.]+)\s*\n\s*Описание:\s*(.*?)\s*\n\s*Категория:\s*(.+?)(?=\n\s*Доход/Расход:|$)'
+    
+    matches = re.finditer(transaction_pattern, text_clean, re.MULTILINE | re.DOTALL | re.IGNORECASE)
     
     for match in matches:
         try:
