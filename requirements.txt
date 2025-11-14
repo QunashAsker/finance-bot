@@ -12,4 +12,5 @@ loguru==0.7.2
 aiofiles==23.2.1
 openpyxl==3.1.2
 pandas==2.1.4
+python-dateutil==2.8.2
 

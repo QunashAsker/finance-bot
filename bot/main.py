@@ -41,6 +41,12 @@ from utils.statement_parser import (
 )
 from utils.text_parser import parse_transaction_text, normalize_merchant_name
 from utils.auto_categorizer import auto_categorize_transaction, suggest_merchant_description
+from utils.periods import (
+    get_period_boundaries,
+    get_period_name,
+    calculate_period_comparison,
+    format_comparison_text
+)
 from bot.keyboards import (
     get_main_menu_keyboard,
     get_categories_inline_keyboard,
@@ -388,48 +394,91 @@ async def cancel_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать историю транзакций."""
+    """Показать выбор периода для истории."""
+    try:
+        message = update.message if update.message else update.callback_query.message
+        await message.reply_text(
+            "📜 <b>История транзакций</b>\n\nВыберите период:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_period_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при показе выбора периода: {e}")
+        message = update.message if update.message else update.callback_query.message
+        await message.reply_text("❌ Произошла ошибка.")
+
+
+async def handle_history_period(update: Update, context: ContextTypes.DEFAULT_TYPE, period_type: str):
+    """Показать историю транзакций за выбранный период."""
+    query = update.callback_query
+    await query.answer()
+    
     db = SessionLocal()
     try:
         user = update.effective_user
         db_user = get_or_create_user(db, user.id)
+        user_settings = get_user_settings(db, db_user.id)
         
-        transactions = get_transactions_by_user(db, db_user.id, limit=10)
+        # Получаем начало месяца из настроек
+        month_start = user_settings.get("month_start", 1)
+        
+        # Получаем границы периода
+        start_date, end_date = get_period_boundaries(period_type, month_start)
+        period_name = get_period_name(period_type, start_date, end_date)
+        
+        # Получаем транзакции за период
+        transactions = get_transactions_by_user(db, db_user.id, start_date=start_date, end_date=end_date, limit=50)
         
         if not transactions:
-            await update.message.reply_text(
-                "📜 История пуста.\n\nДобавь первую транзакцию!",
-                reply_markup=get_main_menu_keyboard()
+            await query.edit_message_text(
+                f"📜 <b>История: {period_name}</b>\n\n📭 Нет транзакций за этот период",
+                parse_mode=ParseMode.HTML
             )
             return
         
-        # Отправляем сообщение с кнопками для каждой транзакции
-        for trans in transactions:
+        # Формируем текст истории
+        history_text = f"📜 <b>История: {period_name}</b>\n\nПоказано транзакций: {len(transactions)}\n\n"
+        
+        for i, trans in enumerate(transactions[:20], 1):  # Показываем первые 20
             icon = "➕" if trans.type == TType.INCOME else "➖"
             category_name = trans.category.name if trans.category else "Без категории"
             # Экранируем HTML символы
             category_name = category_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            trans_text = f"{icon} <b>{format_amount(trans.amount)}</b> - {category_name}"
-            if trans.description:
-                desc_escaped = trans.description.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                trans_text += f"\n{desc_escaped}"
-            trans_text += f"\n{format_date(trans.date)}"
             
-            await update.message.reply_text(
-                trans_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_transaction_actions_keyboard(trans.id)
-            )
+            history_text += f"{i}. {icon} {format_amount(trans.amount, user_settings=user_settings)} - {category_name}"
+            if trans.description:
+                desc_escaped = trans.description[:30].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                history_text += f" ({desc_escaped}...)" if len(trans.description) > 30 else f" ({desc_escaped})"
+            history_text += f"\n   {format_date(trans.date)}\n\n"
         
-        await update.message.reply_text(
-            "Выбери транзакцию для редактирования или удаления:",
-            reply_markup=get_main_menu_keyboard()
+        if len(transactions) > 20:
+            history_text += f"...и еще {len(transactions) - 20} транзакций"
+        
+        await query.edit_message_text(
+            history_text,
+            parse_mode=ParseMode.HTML
         )
     except Exception as e:
         logger.error(f"Ошибка при показе истории: {e}")
-        await update.message.reply_text("❌ Произошла ошибка.")
+        await query.edit_message_text("❌ Произошла ошибка.")
     finally:
         db.close()
+
+
+async def handle_period_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать выбор периода для статистики или истории."""
+    query = update.callback_query
+    period_type = query.data.replace("period_", "")
+    
+    # Определяем, статистика или история по тексту сообщения
+    message_text = query.message.text or ""
+    
+    if "Статистика" in message_text:
+        await handle_statistics_period(update, context, period_type)
+    elif "История" in message_text:
+        await handle_history_period(update, context, period_type)
+    else:
+        await query.answer("❌ Ошибка определения типа запроса")
 
 
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -477,69 +526,96 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать статистику."""
+    """Показать выбор периода для статистики."""
+    try:
+        message = update.message if update.message else update.callback_query.message
+        await message.reply_text(
+            "📈 <b>Статистика</b>\n\nВыберите период:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_period_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при показе выбора периода: {e}")
+        message = update.message if update.message else update.callback_query.message
+        await message.reply_text("❌ Произошла ошибка.")
+
+
+async def handle_statistics_period(update: Update, context: ContextTypes.DEFAULT_TYPE, period_type: str):
+    """Показать статистику за выбранный период."""
+    query = update.callback_query
+    await query.answer()
+    
     db = SessionLocal()
     try:
         user = update.effective_user
         db_user = get_or_create_user(db, user.id)
+        user_settings = get_user_settings(db, db_user.id)
         
-        # Период - текущий месяц
-        today = date.today()
-        first_day = date(today.year, today.month, 1)
+        # Получаем начало месяца из настроек
+        month_start = user_settings.get("month_start", 1)
         
-        # Общая статистика за месяц
-        month_stats = get_balance(db, db_user.id, start_date=first_day, end_date=today)
+        # Получаем границы периода
+        start_date, end_date = get_period_boundaries(period_type, month_start)
+        period_name = get_period_name(period_type, start_date, end_date)
         
-        # Статистика по категориям расходов
+        # Общая статистика за период
+        period_stats = get_balance(db, db_user.id, start_date=start_date, end_date=end_date)
+        
+        # Статистика по категориям
         expense_stats = get_statistics_by_category(
-            db, db_user.id, TType.EXPENSE, start_date=first_day, end_date=today
+            db, db_user.id, TType.EXPENSE, start_date=start_date, end_date=end_date
         )
-        
-        # Статистика по категориям доходов
         income_stats = get_statistics_by_category(
-            db, db_user.id, TType.INCOME, start_date=first_day, end_date=today
+            db, db_user.id, TType.INCOME, start_date=start_date, end_date=end_date
         )
         
         # Средний дневной расход
-        avg_daily = get_average_daily_expense(db, db_user.id, start_date=first_day, end_date=today)
+        avg_daily = get_average_daily_expense(db, db_user.id, start_date=start_date, end_date=end_date)
         
-        stats_text = f"""
-📈 <b>Статистика за текущий месяц</b>
+        stats_text = f"""📈 <b>Статистика: {period_name}</b>
 
 <b>Общие показатели:</b>
-💰 Доходы: {format_amount(month_stats['income'])}
-💸 Расходы: {format_amount(month_stats['expense'])}
-💵 Баланс: {format_amount(month_stats['balance'])}
-📊 Средний расход в день: {format_amount(avg_daily)}
-        """
+💰 Доходы: {format_amount(period_stats['income'], user_settings=user_settings)}
+💸 Расходы: {format_amount(period_stats['expense'], user_settings=user_settings)}
+💵 Баланс: {format_amount(period_stats['balance'], user_settings=user_settings)}
+📊 Средний расход в день: {format_amount(avg_daily, user_settings=user_settings)}"""
         
         # Топ-5 категорий расходов
         if expense_stats:
-            stats_text += "\n<b>Топ расходов по категориям:</b>\n"
+            stats_text += "\n\n<b>Топ расходов по категориям:</b>"
             for i, stat in enumerate(expense_stats[:5], 1):
-                percentage = (stat['total'] / month_stats['expense'] * 100) if month_stats['expense'] > 0 else 0
+                percentage = (stat['total'] / period_stats['expense'] * 100) if period_stats['expense'] > 0 else 0
                 cat_name = stat['name'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                stats_text += f"{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+                stats_text += f"\n{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'], user_settings=user_settings)} ({percentage:.1f}%)"
         
         # Топ-5 категорий доходов
         if income_stats:
-            stats_text += "\n<b>Топ доходов по категориям:</b>\n"
+            stats_text += "\n\n<b>Топ доходов по категориям:</b>"
             for i, stat in enumerate(income_stats[:5], 1):
-                percentage = (stat['total'] / month_stats['income'] * 100) if month_stats['income'] > 0 else 0
+                percentage = (stat['total'] / period_stats['income'] * 100) if period_stats['income'] > 0 else 0
                 cat_name = stat['name'].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                stats_text += f"{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'])} ({percentage:.1f}%)\n"
+                stats_text += f"\n{i}. {stat['icon']} {cat_name}: {format_amount(stat['total'], user_settings=user_settings)} ({percentage:.1f}%)"
+        
+        # Сравнение с предыдущим периодом (только для current)
+        if period_type == "current":
+            prev_start_date, prev_end_date = get_period_boundaries("previous", month_start)
+            previous_stats = get_balance(db, db_user.id, start_date=prev_start_date, end_date=prev_end_date)
+            
+            comparison = calculate_period_comparison(period_stats, previous_stats)
+            comparison_text = format_comparison_text(comparison, user_settings)
+            
+            stats_text += f"\n\n<b>📊 Сравнение с прошлым периодом:</b>\n{comparison_text}"
         
         if not expense_stats and not income_stats:
-            stats_text += "\n📭 Нет транзакций за этот период"
+            stats_text += "\n\n📭 Нет транзакций за этот период"
         
-        await update.message.reply_text(
+        await query.edit_message_text(
             stats_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=get_main_menu_keyboard()
+            parse_mode=ParseMode.HTML
         )
     except Exception as e:
         logger.error(f"Ошибка при показе статистики: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при загрузке статистики.")
+        await query.edit_message_text("❌ Произошла ошибка при загрузке статистики.")
     finally:
         db.close()
 
@@ -1627,6 +1703,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_transaction_callback, pattern="^(edit_transaction_|delete_transaction_)"))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^(setting_|currency_|month_start_|settings_back)"))
     application.add_handler(CallbackQueryHandler(handle_import_callback, pattern="^import_"))
+    application.add_handler(CallbackQueryHandler(handle_period_callback, pattern="^period_"))
     application.add_handler(CallbackQueryHandler(handle_quick_confirm, pattern="^quick_confirm$"))
     application.add_handler(CallbackQueryHandler(handle_quick_cancel, pattern="^quick_cancel$"))
     application.add_handler(CallbackQueryHandler(handle_save_merchant_rule, pattern="^save_rule_"))

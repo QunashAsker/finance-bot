@@ -58,15 +58,19 @@ def get_confirmation_keyboard():
 
 
 def get_period_keyboard():
-    """Клавиатура выбора периода."""
+    """Клавиатура выбора периода для статистики и истории."""
     keyboard = [
         [
-            InlineKeyboardButton("Сегодня", callback_data="period_today"),
-            InlineKeyboardButton("Неделя", callback_data="period_week")
+            InlineKeyboardButton("📅 Сегодня", callback_data="period_today"),
+            InlineKeyboardButton("📆 Неделя", callback_data="period_week")
         ],
         [
-            InlineKeyboardButton("Месяц", callback_data="period_month"),
-            InlineKeyboardButton("Год", callback_data="period_year")
+            InlineKeyboardButton("📊 Текущий период", callback_data="period_current"),
+            InlineKeyboardButton("📉 Прошлый период", callback_data="period_previous")
+        ],
+        [
+            InlineKeyboardButton("📈 Год", callback_data="period_year"),
+            InlineKeyboardButton("🗓 Всё время", callback_data="period_all_time")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
